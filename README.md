@@ -1,126 +1,126 @@
 <div align="center">
-  <img src="Resources/AppIcon-1024.png" width="128" alt="Ícone do LocalMeet">
+  <img src="Resources/AppIcon-1024.png" width="128" alt="LocalMeet app icon">
 
   # LocalMeet
 
-  **Suas reuniões, transcritas e organizadas sem sair do seu Mac.**
+  **Your meetings, transcribed and organized without leaving your Mac.**
 
-  Capture o áudio do sistema e do microfone em trilhas independentes, preserve o idioma original e gere traduções, resumos e próximos passos usando modelos locais.
+  Capture system audio and your microphone as independent tracks, preserve the original language, and generate translations, summaries, and next steps with on-device models.
 
   [![macOS 15+](https://img.shields.io/badge/macOS-15%2B-111111?logo=apple)](https://www.apple.com/macos/)
   [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](https://www.swift.org/)
-  [![Processamento local](https://img.shields.io/badge/privacidade-processamento%20local-2E7D32)](#privacidade)
+  [![Local processing](https://img.shields.io/badge/privacy-local%20processing-2E7D32)](#privacy)
   [![Release](https://img.shields.io/github/v/release/LuizDoPc/LocalMeet?display_name=tag)](https://github.com/LuizDoPc/LocalMeet/releases/latest)
 </div>
 
 ---
 
-## O que ele faz
+## Features
 
-- Captura **áudio do sistema e microfone separadamente**, inclusive quando as falas se sobrepõem.
-- Transcreve reuniões com **Português, English e Deutsch** na mesma conversa.
-- Detecta mudanças de idioma dinamicamente, sem substituir o texto original.
-- Exibe traduções sob demanda nos três idiomas e valida o idioma produzido.
-- Gera resumo, decisões, datas importantes e action points com responsável e prazo.
-- Permite marcar ações como concluídas e registra a data de conclusão.
-- Organiza reuniões com tags, busca e filtros.
-- Exporta cada reunião como Markdown.
-- Mostra diagnósticos de sinal do microfone e do áudio do sistema após a captura.
+- Captures **system audio and microphone separately**, even when people speak over each other.
+- Transcribes meetings containing **Portuguese, English, and German** in the same conversation.
+- Detects language changes dynamically without replacing the original transcript.
+- Shows on-demand translations in all three languages and validates the generated language.
+- Generates summaries, decisions, key dates, and action items with owners and due dates.
+- Lets you mark action items as completed and records their completion date.
+- Organizes meetings with tags, search, and filters.
+- Exports meetings as Markdown.
+- Reports whether microphone and system-audio signals were detected during capture.
 
-## Privacidade
+## Privacy
 
-O LocalMeet foi desenhado para manter o conteúdo da reunião no dispositivo:
+LocalMeet is designed to keep meeting content on your device:
 
-- O [whisper.cpp](https://github.com/ggerganov/whisper.cpp) faz a transcrição e a detecção de idioma localmente.
-- O Foundation Models da Apple gera traduções e análises no dispositivo, quando disponível.
-- Os arquivos de áudio existem apenas durante o processamento e são removidos ao final.
-- As transcrições ficam em `~/Library/Application Support/LocalMeet/meetings.json`.
-- Nenhum servidor próprio, conta ou chave de API é necessário.
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) handles transcription and language detection locally.
+- Apple Foundation Models generates translations and meeting analysis on-device when available.
+- Audio files exist only during processing and are removed afterward.
+- Transcripts are stored at `~/Library/Application Support/LocalMeet/meetings.json`.
+- No account, proprietary server, or API key is required.
 
-> Na primeira execução, o app baixa o modelo multilíngue `small` do whisper.cpp, com aproximadamente 466 MB. Depois disso, a transcrição funciona offline.
+> On first launch, the app downloads the multilingual whisper.cpp `small` model, which is approximately 466 MB. Transcription works offline after that.
 
-## Instalação
+## Installation
 
-1. Baixe o DMG na página de [Releases](https://github.com/LuizDoPc/LocalMeet/releases/latest).
-2. Abra o arquivo e arraste o **LocalMeet** para **Aplicativos**.
-3. Autorize **Microfone** e **Gravação de Tela e Áudio do Sistema** quando o macOS solicitar.
-4. Escolha o dispositivo de entrada na tela inicial ou em **Ajustes**.
+1. Download the DMG from the [Releases](https://github.com/LuizDoPc/LocalMeet/releases/latest) page.
+2. Open it and drag **LocalMeet** into **Applications**.
+3. Allow **Microphone** and **Screen & System Audio Recording** when prompted by macOS.
+4. Select your input device on the welcome screen or in **Settings**.
 
-O build atual usa assinatura ad hoc e ainda não é notarizado. Caso o macOS bloqueie a primeira abertura, clique com o botão direito no app, escolha **Abrir** e confirme.
+The current build uses an ad hoc signature and is not notarized yet. If macOS blocks the first launch, right-click the app, choose **Open**, and confirm.
 
-## Requisitos
+## Requirements
 
-| Recurso | Requisito |
+| Feature | Requirement |
 | --- | --- |
-| Captura e transcrição | macOS 15 ou mais recente |
-| Tradução, resumo e action points | macOS 26 com Apple Intelligence habilitado |
-| Arquitetura do DMG atual | Apple Silicon |
-| Compilação do código | Xcode 16+, Swift 6 e Homebrew |
+| Audio capture and transcription | macOS 15 or later |
+| Translation, summaries, and action items | macOS 26 with Apple Intelligence enabled |
+| Current DMG architecture | Apple Silicon |
+| Building from source | Xcode 16+, Swift 6, and Homebrew |
 
-## Como funciona
+## How it works
 
 ```text
-Áudio do sistema ── ScreenCaptureKit ─┐
-                                      ├─ arquivos temporários separados
-Microfone ──────── AVFoundation ──────┘
-                                                   │
-                                                   ▼
-                                     whisper.cpp multilíngue
-                                                   │
-                               transcrição original + linha do tempo
-                                                   │
-                                                   ▼
-                              Foundation Models no dispositivo
-                             tradução · resumo · decisões · ações
+System audio ──── ScreenCaptureKit ─┐
+                                    ├─ independent temporary audio files
+Microphone ────── AVFoundation ─────┘
+                                                  │
+                                                  ▼
+                                    multilingual whisper.cpp
+                                                  │
+                              original transcript + shared timeline
+                                                  │
+                                                  ▼
+                              on-device Apple Foundation Models
+                         translation · summary · decisions · actions
 ```
 
-As duas fontes são transcritas independentemente e só depois mescladas pela linha do tempo. Isso mantém os segmentos **Você** e **Reunião** separados mesmo durante sobreposição de fala.
+Both sources are transcribed independently and merged only after transcription using their timestamps. This keeps **You** and **Meeting** segments separate, including during overlapping speech.
 
-## Desenvolvendo
+## Development
 
-Instale as dependências nativas:
+Install the native dependencies:
 
 ```bash
 brew install whisper-cpp ggml libomp
 ```
 
-Compile e execute os testes:
+Build the project and run its tests:
 
 ```bash
 swift build
 swift test
 ```
 
-Gere o bundle do aplicativo:
+Create the application bundle:
 
 ```bash
 ./scripts/build-app.sh
 open dist/LocalMeet.app
 ```
 
-Gere o DMG distribuível:
+Create a distributable DMG:
 
 ```bash
 ./scripts/build-dmg.sh
 ```
 
-O script inclui o runtime do whisper.cpp dentro do `.app` e aplica uma assinatura ad hoc. Para distribuição ampla, substitua-a por uma identidade Developer ID e faça a notarização com a Apple.
+The build script embeds the whisper.cpp runtime in the `.app` and applies an ad hoc signature. For broader distribution, replace it with a Developer ID identity and notarize the app with Apple.
 
-## Stack
+## Tech stack
 
 - SwiftUI
 - ScreenCaptureKit
 - AVFoundation
-- whisper.cpp (`small`, multilíngue)
+- whisper.cpp (`small`, multilingual)
 - Apple Foundation Models
 - Swift Testing
 
-## Dados e permissões
+## Data and permissions
 
-O LocalMeet solicita apenas as permissões necessárias para capturar as duas fontes de áudio. Se uma gravação vier sem sua voz, confirme o microfone escolhido em **Ajustes**; o indicador de diagnóstico da reunião informa qual entrada foi usada e se houve sinal.
+LocalMeet requests only the permissions required to capture both audio sources. If a recording does not include your voice, confirm the selected microphone in **Settings**. Each meeting's capture diagnostics show which input was used and whether a signal was detected.
 
 ---
 
 <div align="center">
-  Feito para reuniões multilíngues — e para continuar funcionando quando a internet não funciona.
+  Built for multilingual meetings — and to keep working when the internet does not.
 </div>

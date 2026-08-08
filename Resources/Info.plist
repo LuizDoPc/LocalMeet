@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>pt_BR</string>
+    <key>CFBundleExecutable</key>
+    <string>LocalMeet</string>
+    <key>CFBundleIdentifier</key>
+    <string>app.localmeet.mac</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>LocalMeet</string>
+    <key>CFBundleDisplayName</key>
+    <string>LocalMeet</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>15.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>O LocalMeet usa seu microfone para transcrever sua participação na reunião.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>O LocalMeet captura somente o áudio do sistema para transcrever os outros participantes da reunião.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Processamento local e privado.</string>
+</dict>
+</plist>

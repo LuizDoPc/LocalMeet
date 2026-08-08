@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+dist/
+.swiftpm/
+*.xcuserstate
+xcuserdata/
+
+# Modelos baixados e dados locais nunca devem entrar no repositório.
+*.bin
+meetings.json

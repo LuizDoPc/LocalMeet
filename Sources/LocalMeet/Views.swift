@@ -1,0 +1,864 @@
+import SwiftUI
+
+private enum Theme {
+    static let ink = Color(red: 0.10, green: 0.11, blue: 0.12)
+    static let muted = Color(red: 0.42, green: 0.43, blue: 0.43)
+    static let paper = Color(red: 0.965, green: 0.953, blue: 0.925)
+    static let card = Color(red: 0.992, green: 0.987, blue: 0.973)
+    static let orange = Color(red: 0.91, green: 0.33, blue: 0.10)
+    static let green = Color(red: 0.14, green: 0.49, blue: 0.34)
+    static let line = Color.black.opacity(0.10)
+}
+
+struct RootView: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        NavigationSplitView {
+            SidebarView()
+                .navigationSplitViewColumnWidth(min: 240, ideal: 270, max: 320)
+        } detail: {
+            ZStack {
+                Theme.paper.ignoresSafeArea()
+                if state.recordingStatus != .idle {
+                    RecordingView()
+                } else if let meeting = state.selectedMeeting {
+                    MeetingDetailView(meeting: meeting)
+                } else {
+                    WelcomeView()
+                }
+            }
+        }
+        .frame(minWidth: 980, minHeight: 650)
+        .tint(Theme.orange)
+        .alert("O LocalMeet precisa da sua ajuda", isPresented: Binding(
+            get: { state.errorMessage != nil },
+            set: { if !$0 { state.dismissError() } }
+        )) {
+            Button("Abrir Ajustes") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy") {
+                    NSWorkspace.shared.open(url)
+                }
+                state.dismissError()
+            }
+            Button("Agora não", role: .cancel) { state.dismissError() }
+        } message: {
+            Text(state.errorMessage ?? "")
+        }
+    }
+}
+
+private struct SidebarView: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Theme.ink)
+                    Image(systemName: "waveform")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 34, height: 34)
+                Text("LocalMeet")
+                    .font(.system(size: 19, weight: .bold, design: .rounded))
+                Spacer()
+            }
+            .padding(16)
+
+            Button(action: state.toggleRecording) {
+                HStack(spacing: 9) {
+                    Circle()
+                        .fill(state.isRecording ? .white : Theme.orange)
+                        .frame(width: 9, height: 9)
+                    Text(state.isRecording ? "Encerrar reunião" : "Nova reunião")
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Text("⌘R")
+                        .font(.caption.monospaced())
+                        .opacity(0.55)
+                }
+                .foregroundStyle(state.isRecording ? .white : Theme.ink)
+                .padding(.horizontal, 13)
+                .frame(height: 42)
+                .background(state.isRecording ? Theme.orange : Color.white.opacity(0.7))
+                .clipShape(RoundedRectangle(cornerRadius: 11))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11)
+                        .stroke(Theme.line, lineWidth: state.isRecording ? 0 : 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(state.recordingStatus == .preparing || state.recordingStatus == .processing)
+            .padding(.horizontal, 12)
+            .keyboardShortcut("r", modifiers: [.command])
+
+            HStack(spacing: 7) {
+                Image(systemName: "lock.fill")
+                    .foregroundStyle(Theme.green)
+                Text("100% neste Mac")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+
+            Divider().opacity(0.6)
+
+            HStack {
+                Text("REUNIÕES")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.2)
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+                Text("\(state.meetings.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 7)
+
+            if !state.allTags.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        filterTag("Todas", selected: state.selectedTagFilter == nil) {
+                            state.selectedTagFilter = nil
+                        }
+                        ForEach(state.allTags, id: \.self) { tag in
+                            filterTag(tag, selected: state.selectedTagFilter == tag) {
+                                state.selectedTagFilter = tag
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 5)
+                }
+            }
+
+            List(selection: $state.selection) {
+                ForEach(state.filteredMeetings) { meeting in
+                    MeetingRow(meeting: meeting)
+                        .tag(meeting.id)
+                        .contextMenu {
+                            Button("Exportar Markdown") { state.export(meeting) }
+                            Divider()
+                            Button("Apagar", role: .destructive) { state.delete(meeting) }
+                        }
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(Theme.muted)
+                TextField("Buscar nas transcrições", text: $state.searchText)
+                    .textFieldStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+            .background(Color.white.opacity(0.55))
+            .clipShape(RoundedRectangle(cornerRadius: 9))
+            .padding(12)
+        }
+        .background(Color(red: 0.92, green: 0.91, blue: 0.88))
+    }
+
+    private func filterTag(_ label: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(selected ? .white : Theme.muted)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(selected ? Theme.ink : Color.white.opacity(0.65))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct MeetingRow: View {
+    let meeting: Meeting
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(meeting.title)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+            HStack(spacing: 5) {
+                Text(meeting.startedAt.formatted(date: .abbreviated, time: .omitted))
+                Text("·")
+                Text(meeting.durationLabel)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+private struct WelcomeView: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                modelBadge
+            }
+            .padding(24)
+
+            Spacer()
+
+            VStack(spacing: 22) {
+                ZStack {
+                    Circle()
+                        .fill(Theme.orange.opacity(0.10))
+                        .frame(width: 104, height: 104)
+                    Circle()
+                        .fill(Theme.orange)
+                        .frame(width: 70, height: 70)
+                    Image(systemName: "waveform")
+                        .font(.system(size: 27, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+
+                VStack(spacing: 10) {
+                    Text("Sua memória de reunião,\nsem sair do Mac.")
+                        .font(.system(size: 38, weight: .bold, design: .rounded))
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(Theme.ink)
+                    Text("Português, English e Deutsch — até na mesma conversa.\nO idioma muda automaticamente e nada vai para a nuvem.")
+                        .font(.system(size: 15))
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(Theme.muted)
+                        .lineSpacing(4)
+                }
+
+                Button(action: primaryAction) {
+                    Label(buttonTitle, systemImage: buttonIcon)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 22)
+                        .frame(height: 46)
+                        .background(Theme.ink)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(state.modelStatus == .downloading || state.modelStatus == .checking)
+
+                HStack(spacing: 10) {
+                    accessPill("Microfone", icon: "mic.fill", status: state.microphoneAccess)
+                    accessPill("Áudio do sistema", icon: "speaker.wave.2.fill", status: state.systemAudioAccess)
+                }
+                Picker("Microfone", selection: Binding(
+                    get: { state.selectedMicrophoneID },
+                    set: { state.selectMicrophone($0) }
+                )) {
+                    ForEach(state.microphones) { microphone in
+                        Text(microphone.name).tag(microphone.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 300)
+
+                HStack(spacing: 26) {
+                    trustItem("character.bubble", "PT · EN · DE automático")
+                    trustItem("translate", "Original + tradução")
+                    trustItem("checklist", "Resumo e ações locais")
+                }
+                .padding(.top, 8)
+            }
+
+            Spacer()
+            Text("O áudio temporário é apagado assim que a transcrição termina.")
+                .font(.caption)
+                .foregroundStyle(Theme.muted)
+                .padding(.bottom, 24)
+        }
+    }
+
+    private var modelBadge: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(state.modelStatus == .ready ? Theme.green : Theme.orange)
+                .frame(width: 7, height: 7)
+            Text(state.modelStatusLabel)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Theme.muted)
+            if state.modelStatus == .downloading {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 34)
+        .background(Theme.card)
+        .clipShape(Capsule())
+        .overlay { Capsule().stroke(Theme.line) }
+    }
+
+    private var buttonTitle: String {
+        switch state.modelStatus {
+        case .needsDownload, .unavailable: "Preparar modelo local"
+        case .downloading: "Baixando…"
+        default: "Começar a ouvir"
+        }
+    }
+
+    private var buttonIcon: String {
+        switch state.modelStatus {
+        case .needsDownload, .unavailable: "arrow.down.circle"
+        default: "record.circle"
+        }
+    }
+
+    private func primaryAction() {
+        switch state.modelStatus {
+        case .needsDownload, .unavailable:
+            state.prepareLocalModel()
+        case .ready:
+            state.toggleRecording()
+        default:
+            break
+        }
+    }
+
+    private func trustItem(_ icon: String, _ text: String) -> some View {
+        VStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.system(size: 18))
+                .foregroundStyle(Theme.green)
+            Text(text)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(Theme.muted)
+        }
+    }
+
+    private func accessPill(_ label: String, icon: String, status: AppState.AccessStatus) -> some View {
+        let granted = status == .granted
+        return Label(label, systemImage: granted ? "checkmark.circle.fill" : icon)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(granted ? Theme.green : Theme.muted)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Theme.card)
+            .clipShape(Capsule())
+            .overlay { Capsule().stroke(Theme.line) }
+    }
+}
+
+private struct RecordingView: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 7) {
+                        Circle().fill(Theme.orange).frame(width: 8, height: 8)
+                        Text(state.recordingStatus == .preparing ? "PREPARANDO" : state.recordingStatus == .processing ? "PROCESSANDO LOCALMENTE" : "OUVINDO AGORA")
+                            .font(.caption2.weight(.bold))
+                            .tracking(1.1)
+                            .foregroundStyle(Theme.orange)
+                    }
+                    Text("Reunião em andamento")
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                }
+                Spacer()
+                Text(state.elapsedLabel)
+                    .font(.system(size: 22, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Theme.ink)
+                Button("Encerrar") { state.toggleRecording() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.orange)
+                    .controlSize(.large)
+                    .disabled(!state.isRecording)
+            }
+            .padding(.horizontal, 30)
+            .padding(.vertical, 22)
+            .background(Theme.card)
+            .overlay(alignment: .bottom) { Divider() }
+
+            if state.recordingStatus == .preparing || state.recordingStatus == .processing {
+                VStack(spacing: 16) {
+                    ProgressView().controlSize(.large)
+                    Text(state.recordingStatus == .processing ? state.processingMessage : "Conectando ao áudio local…")
+                        .foregroundStyle(Theme.muted)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 22) {
+                    MiniWaveform()
+                        .scaleEffect(2.2)
+                        .frame(height: 60)
+                    Text("Capturando reunião e microfone")
+                        .font(.system(size: 21, weight: .bold, design: .rounded))
+                    Text("O Whisper identifica Português, English e Deutsch automaticamente.\nA transcrição original aparece ao encerrar.")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(Theme.muted)
+                        .lineSpacing(4)
+                    HStack(spacing: 8) {
+                        languageChip("PT")
+                        languageChip("EN")
+                        languageChip("DE")
+                    }
+                    HStack(spacing: 10) {
+                        AudioSignalPill(
+                            title: "Microfone",
+                            icon: "mic.fill",
+                            active: state.microphoneIsReceivingAudio
+                        )
+                        AudioSignalPill(
+                            title: "Áudio do sistema",
+                            icon: "speaker.wave.2.fill",
+                            active: state.systemIsReceivingAudio
+                        )
+                    }
+                    Text("Entrada selecionada: \(state.selectedMicrophoneName)")
+                        .font(.caption)
+                        .foregroundStyle(Theme.muted)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "lock.fill")
+                    .foregroundStyle(Theme.green)
+                Text("Chamada + microfone no mesmo pipeline local · áudio apagado ao finalizar")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+                MiniWaveform()
+            }
+            .padding(.horizontal, 30)
+            .frame(height: 48)
+            .background(Theme.card)
+            .overlay(alignment: .top) { Divider() }
+        }
+    }
+
+    private func languageChip(_ label: String) -> some View {
+        Text(label)
+            .font(.caption.weight(.bold))
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(Theme.card)
+            .clipShape(Capsule())
+            .overlay { Capsule().stroke(Theme.line) }
+    }
+}
+
+private struct AudioSignalPill: View {
+    let title: String
+    let icon: String
+    let active: Bool
+
+    var body: some View {
+        Label(active ? "\(title) ativo" : "Aguardando \(title.lowercased())", systemImage: icon)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(active ? Theme.green : Theme.muted)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(Theme.card)
+            .clipShape(Capsule())
+            .overlay {
+                Capsule().stroke(active ? Theme.green.opacity(0.35) : Theme.line)
+            }
+    }
+}
+
+private struct MeetingDetailView: View {
+    @EnvironmentObject private var state: AppState
+    let meeting: Meeting
+    @State private var editingTitle = false
+    @State private var draftTitle = ""
+    @State private var selectedSection = 0
+    @State private var showingNewTag = false
+    @State private var newTag = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 7) {
+                    if editingTitle {
+                        TextField("Nome da reunião", text: $draftTitle)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .onSubmit { saveTitle() }
+                    } else {
+                        Text(meeting.title)
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .onTapGesture(count: 2) {
+                                draftTitle = meeting.title
+                                editingTitle = true
+                            }
+                    }
+                    Text("\(meeting.startedAt.formatted(date: .long, time: .shortened))  ·  \(meeting.durationLabel)")
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.muted)
+                    HStack(spacing: 6) {
+                        ForEach(meeting.tags, id: \.self) { tag in
+                            HStack(spacing: 4) {
+                                Text(tag)
+                                Button {
+                                    state.removeTag(tag, from: meeting.id)
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 8, weight: .bold))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Theme.orange.opacity(0.10))
+                            .foregroundStyle(Theme.orange)
+                            .clipShape(Capsule())
+                        }
+                        Menu {
+                            let available = state.allTags.filter { !meeting.tags.contains($0) }
+                            ForEach(available, id: \.self) { tag in
+                                Button(tag) { state.addTag(tag, to: meeting.id) }
+                            }
+                            if !available.isEmpty { Divider() }
+                            Button("Criar nova tag…") { showingNewTag = true }
+                        } label: {
+                            Label("Tag", systemImage: "plus")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                    }
+                    if let diagnostics = meeting.captureDiagnostics {
+                        HStack(spacing: 10) {
+                            captureStatus(
+                                diagnostics.microphoneSignalDetected,
+                                label: diagnostics.microphoneName,
+                                icon: "mic.fill"
+                            )
+                            captureStatus(
+                                diagnostics.systemSignalDetected,
+                                label: "Áudio do sistema",
+                                icon: "speaker.wave.2.fill"
+                            )
+                        }
+                    }
+                }
+                Spacer()
+                Picker("Visualização", selection: $selectedSection) {
+                    Text("Resumo").tag(0)
+                    Text("Transcrição").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+                Button { state.export(meeting) } label: {
+                    Label("Exportar", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+            }
+            .padding(30)
+            .background(Theme.card)
+            .overlay(alignment: .bottom) { Divider() }
+
+            if meeting.segments.isEmpty {
+                ContentUnavailableView(
+                    "Nenhuma fala reconhecida",
+                    systemImage: "text.bubble",
+                    description: Text("Confira se o idioma offline está instalado e se havia áudio na chamada.")
+                )
+            } else if selectedSection == 0 {
+                AnalysisView(meeting: meeting)
+            } else {
+                transcriptView
+            }
+        }
+        .alert("Nova tag", isPresented: $showingNewTag) {
+            TextField("Ex.: Cliente, Produto, Interna", text: $newTag)
+            Button("Cancelar", role: .cancel) { newTag = "" }
+            Button("Adicionar") {
+                state.addTag(newTag, to: meeting.id)
+                newTag = ""
+            }
+        } message: {
+            Text("A tag ficará disponível para outras reuniões e para os filtros da barra lateral.")
+        }
+    }
+
+    private var transcriptView: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("MOSTRAR TRADUÇÃO EM")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1)
+                    .foregroundStyle(Theme.muted)
+                Picker("Tradução", selection: $state.translationTarget) {
+                    ForEach(LanguageOption.supported) { language in
+                        Text(language.name).tag(language.id)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 300)
+                Button {
+                    Task { await state.analyze(meetingID: meeting.id) }
+                } label: {
+                    Label("Refazer traduções", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .disabled(state.analysisMeetingID != nil)
+                Spacer()
+                Text("O original nunca é alterado")
+                    .font(.caption)
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.horizontal, 30)
+            .frame(height: 52)
+            .background(Theme.card.opacity(0.7))
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    ForEach(meeting.segments) { segment in
+                        TranscriptBubble(segment: segment, translationTarget: state.translationTarget)
+                    }
+                }
+                .padding(30)
+                .frame(maxWidth: 820, alignment: .leading)
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private func saveTitle() {
+        state.rename(meeting, to: draftTitle)
+        editingTitle = false
+    }
+
+    private func captureStatus(_ detected: Bool, label: String, icon: String) -> some View {
+        Label(detected ? "\(label): sinal captado" : "\(label): sem sinal", systemImage: icon)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(detected ? Theme.green : Theme.orange)
+    }
+}
+
+private struct AnalysisView: View {
+    @EnvironmentObject private var state: AppState
+    let meeting: Meeting
+
+    var body: some View {
+        Group {
+            if state.analysisMeetingID == meeting.id {
+                VStack(spacing: 16) {
+                    ProgressView().controlSize(.large)
+                    Text("O modelo local está traduzindo e organizando a reunião…")
+                        .foregroundStyle(Theme.muted)
+                    Text("Resumo · decisões · ações · responsáveis · datas")
+                        .font(.caption)
+                        .foregroundStyle(Theme.muted)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let analysis = meeting.analysis {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 24) {
+                        analysisCard("RESUMO", icon: "text.alignleft") {
+                            Text(analysis.summary).lineSpacing(4)
+                        }
+                        if !analysis.decisions.isEmpty {
+                            analysisCard("DECISÕES", icon: "checkmark.seal") {
+                                ForEach(analysis.decisions, id: \.self) { decision in
+                                    Label(decision, systemImage: "checkmark")
+                                }
+                            }
+                        }
+                        analysisCard("ACTION POINTS", icon: "checklist") {
+                            if analysis.actionItems.isEmpty {
+                                Text("Nenhuma ação explícita identificada.").foregroundStyle(Theme.muted)
+                            } else {
+                                ForEach(analysis.actionItems) { item in
+                                    HStack(alignment: .top, spacing: 12) {
+                                        Button {
+                                            state.toggleAction(meetingID: meeting.id, actionID: item.id)
+                                        } label: {
+                                            Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                                                .font(.system(size: 18))
+                                                .foregroundStyle(item.isCompleted ? Theme.green : Theme.orange)
+                                        }
+                                        .buttonStyle(.plain)
+                                        VStack(alignment: .leading, spacing: 5) {
+                                            Text(item.task)
+                                                .fontWeight(.semibold)
+                                                .strikethrough(item.isCompleted, color: Theme.muted)
+                                                .foregroundStyle(item.isCompleted ? Theme.muted : Theme.ink)
+                                            HStack(spacing: 10) {
+                                                Label(item.owner ?? "Responsável não definido", systemImage: "person")
+                                                Label(item.dueDate ?? "Sem prazo definido", systemImage: "calendar")
+                                                if let completedAt = item.completedAt {
+                                                    Label(
+                                                        "Concluído em \(completedAt.formatted(date: .abbreviated, time: .shortened))",
+                                                        systemImage: "checkmark"
+                                                    )
+                                                    .foregroundStyle(Theme.green)
+                                                }
+                                            }
+                                            .font(.caption)
+                                            .foregroundStyle(Theme.muted)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if !analysis.keyDates.isEmpty {
+                            analysisCard("DATAS IMPORTANTES", icon: "calendar.badge.clock") {
+                                ForEach(analysis.keyDates) { item in
+                                    HStack(alignment: .top) {
+                                        Text(item.date).fontWeight(.bold).frame(width: 120, alignment: .leading)
+                                        Text(item.context)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(30)
+                    .frame(maxWidth: 860)
+                    .frame(maxWidth: .infinity)
+                }
+            } else {
+                ContentUnavailableView {
+                    Label("Resumo ainda não gerado", systemImage: "sparkles")
+                } description: {
+                    Text("O Apple Intelligence analisa a transcrição sem enviar dados para a nuvem.")
+                } actions: {
+                    Button("Gerar resumo e traduções") {
+                        Task { await state.analyze(meetingID: meeting.id) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+    }
+
+    private func analysisCard<Content: View>(
+        _ title: String,
+        icon: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Label(title, systemImage: icon)
+                .font(.caption.weight(.bold))
+                .tracking(1)
+                .foregroundStyle(Theme.green)
+            VStack(alignment: .leading, spacing: 13, content: content)
+                .font(.system(size: 15))
+                .foregroundStyle(Theme.ink)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay { RoundedRectangle(cornerRadius: 14).stroke(Theme.line) }
+    }
+}
+
+private struct TranscriptBubble: View {
+    let segment: TranscriptSegment
+    var translationTarget: String? = nil
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Text(segment.timestamp)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(Theme.muted)
+                .frame(width: 42, alignment: .trailing)
+                .padding(.top, 3)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 7) {
+                    Text(segment.source.label.uppercased())
+                    Text(segment.languageLabel.uppercased())
+                        .foregroundStyle(Theme.muted)
+                }
+                .font(.caption2.weight(.bold))
+                .tracking(0.9)
+                .foregroundStyle(segment.source == .microphone ? Theme.orange : Theme.green)
+                Text(segment.text)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Theme.ink)
+                    .textSelection(.enabled)
+                    .lineSpacing(4)
+                if let translationTarget,
+                   let translated = segment.translations[translationTarget],
+                   translated.localizedCaseInsensitiveCompare(segment.text) != .orderedSame {
+                    Divider().padding(.vertical, 3)
+                    HStack(alignment: .top, spacing: 7) {
+                        Image(systemName: "translate")
+                            .foregroundStyle(Theme.orange)
+                        Text(translated)
+                            .foregroundStyle(Theme.muted)
+                            .textSelection(.enabled)
+                            .lineSpacing(4)
+                    }
+                }
+            }
+            .padding(15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.card)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay { RoundedRectangle(cornerRadius: 12).stroke(Theme.line) }
+        }
+    }
+}
+
+private struct LiveTranscriptBubble: View {
+    let source: AudioSource
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: source == .microphone ? "mic.fill" : "speaker.wave.2.fill")
+                .foregroundStyle(source == .microphone ? Theme.orange : Theme.green)
+                .frame(width: 42, alignment: .trailing)
+                .padding(.top, 3)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Text(source.label.uppercased())
+                        .font(.caption2.weight(.bold))
+                        .tracking(0.9)
+                    Text("AO VIVO")
+                        .font(.system(size: 8, weight: .bold))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Theme.orange.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+                .foregroundStyle(source == .microphone ? Theme.orange : Theme.green)
+                Text(text)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Theme.ink)
+                    .lineSpacing(4)
+            }
+            .padding(15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.card.opacity(0.8))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay { RoundedRectangle(cornerRadius: 12).stroke(Theme.orange.opacity(0.25)) }
+        }
+    }
+}
+
+private struct MiniWaveform: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 0.16)) { timeline in
+            let phase = timeline.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .center, spacing: 3) {
+                ForEach(0..<9, id: \.self) { index in
+                    Capsule()
+                        .fill(Theme.orange.opacity(0.75))
+                        .frame(width: 3, height: 5 + abs(sin(phase * 3 + Double(index))) * 14)
+                }
+            }
+            .frame(height: 22)
+        }
+    }
+}

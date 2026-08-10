@@ -27,6 +27,8 @@
 - Exports meetings as Markdown.
 - Reports whether microphone and system-audio signals were detected during capture.
 - Checkpoints each meeting and preserves recovery audio before transcription begins.
+- Processes long meetings with bounded chunks and hierarchical summarization instead of sending the full transcript to one model context.
+- Saves summaries and action items before starting potentially long translation work.
 
 ## Privacy
 

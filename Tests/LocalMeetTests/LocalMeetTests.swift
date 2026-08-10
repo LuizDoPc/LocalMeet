@@ -118,6 +118,30 @@ import Testing
     #expect(!result.analysis.actionItems.isEmpty)
 }
 
+@Test func localLongMeetingIntelligence() async throws {
+    guard let directoryPath = ProcessInfo.processInfo.environment["LOCALMEET_LONG_MEETING_DIRECTORY"] else {
+        return
+    }
+    let meetings = MeetingStore(baseDirectory: URL(fileURLWithPath: directoryPath)).load()
+    let meeting = try #require(meetings.first(where: { !$0.segments.isEmpty }))
+
+    let result = try await LocalIntelligenceEngine().process(segments: meeting.segments)
+    #expect(result.segments.count == meeting.segments.count)
+    #expect(result.segments.allSatisfy { !$0.translations["pt", default: ""].isEmpty })
+    #expect(!result.analysis.summary.isEmpty)
+}
+
+@Test func localLongMeetingAnalysis() async throws {
+    guard let directoryPath = ProcessInfo.processInfo.environment["LOCALMEET_LONG_ANALYSIS_DIRECTORY"] else {
+        return
+    }
+    let meetings = MeetingStore(baseDirectory: URL(fileURLWithPath: directoryPath)).load()
+    let meeting = try #require(meetings.first(where: { !$0.segments.isEmpty }))
+
+    let analysis = try await LocalIntelligenceEngine().analyze(segments: meeting.segments)
+    #expect(!analysis.summary.isEmpty)
+}
+
 @Test func localWhisperTranscription() async throws {
     guard ProcessInfo.processInfo.environment["LOCALMEET_WHISPER_TEST"] == "1" else { return }
     let sample = URL(fileURLWithPath: "/opt/homebrew/share/whisper-cpp/jfk.wav")

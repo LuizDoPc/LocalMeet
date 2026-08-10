@@ -28,44 +28,78 @@ struct LocalIntelligenceEngine: Sendable {
         }
         return try await AppleIntelligenceProcessor().process(segments: segments)
     }
+
+    func analyze(segments: [TranscriptSegment]) async throws -> MeetingAnalysis {
+        guard #available(macOS 26.0, *) else {
+            throw LocalIntelligenceError.requiresMacOS26
+        }
+        return try await AppleIntelligenceProcessor().analyzeMeeting(segments)
+    }
+
+    func translate(segments: [TranscriptSegment]) async throws -> [TranscriptSegment] {
+        guard #available(macOS 26.0, *) else {
+            throw LocalIntelligenceError.requiresMacOS26
+        }
+        return try await AppleIntelligenceProcessor().translateMeeting(segments)
+    }
 }
 
 @available(macOS 26.0, *)
 private struct AppleIntelligenceProcessor {
-    func process(segments: [TranscriptSegment]) async throws -> IntelligenceResult {
-        let model = SystemLanguageModel.default
-        guard model.isAvailable else {
-            throw LocalIntelligenceError.unavailable(String(describing: model.availability))
-        }
+    private let translationCharacterLimit = 900
+    private let analysisCharacterLimit = 2_400
+    private let summaryCharacterLimit = 2_000
 
+    func process(segments: [TranscriptSegment]) async throws -> IntelligenceResult {
+        let analysis = try await analyzeMeeting(segments)
+        let translated = try await translateMeeting(segments)
+        return IntelligenceResult(segments: translated, analysis: analysis)
+    }
+
+    func translateMeeting(_ segments: [TranscriptSegment]) async throws -> [TranscriptSegment] {
+        try requireAvailableModel()
         var translated = segments
-        for start in stride(from: 0, to: translated.count, by: 8) {
-            let end = min(start + 8, translated.count)
-            let batch = Array(translated[start..<end])
-            let rows = try await translate(batch)
+        for indices in segmentBatches(
+            translated,
+            characterLimit: translationCharacterLimit,
+            itemLimit: 8
+        ) {
+            let batch = indices.map { translated[$0] }
+            let rows = await translateSafely(batch)
             for row in rows where row.index >= 0 && row.index < batch.count {
-                let index = start + row.index
+                let index = indices[row.index]
                 translated[index].detectedLanguage = normalizedLanguage(row.originalLanguage)
                 translated[index].translations = [
                     "pt": row.portuguese,
                     "en": row.english,
                     "de": row.german
-                ]
+                ].filter { !$0.value.isEmpty }
             }
         }
+        return translated
+    }
 
-        let analysis = try await analyze(translated)
-        return IntelligenceResult(segments: translated, analysis: analysis)
+    func analyzeMeeting(_ segments: [TranscriptSegment]) async throws -> MeetingAnalysis {
+        try requireAvailableModel()
+        return try await analyze(segments)
+    }
+
+    private func requireAvailableModel() throws {
+        let model = SystemLanguageModel.default
+        guard model.isAvailable else {
+            throw LocalIntelligenceError.unavailable(String(describing: model.availability))
+        }
     }
 
     private func translate(_ segments: [TranscriptSegment]) async throws -> [ValidatedTranslation] {
         var rows = segments.enumerated().map { index, segment in
-            ValidatedTranslation(
+            let language = detectedLanguage(for: segment.text, hint: segment.detectedLanguage)
+            return ValidatedTranslation(
                 index: index,
-                originalLanguage: detectedLanguage(for: segment.text, hint: segment.detectedLanguage),
-                portuguese: segment.text,
-                english: segment.text,
-                german: segment.text
+                originalLanguage: language,
+                portuguese: language == "pt" ? segment.text : "",
+                english: language == "en" ? segment.text : "",
+                german: language == "de" ? segment.text : ""
             )
         }
 
@@ -83,38 +117,104 @@ private struct AppleIntelligenceProcessor {
         return rows
     }
 
+    private func translateSafely(_ segments: [TranscriptSegment]) async -> [ValidatedTranslation] {
+        do {
+            return try await translate(segments)
+        } catch {
+            guard segments.count > 1 else {
+                guard let segment = segments.first else { return [] }
+                return [await translateSingleFallback(segment)]
+            }
+            let midpoint = segments.count / 2
+            let left = await translateSafely(Array(segments[..<midpoint]))
+            let right = await translateSafely(Array(segments[midpoint...])).map {
+                ValidatedTranslation(
+                    index: $0.index + midpoint,
+                    originalLanguage: $0.originalLanguage,
+                    portuguese: $0.portuguese,
+                    english: $0.english,
+                    german: $0.german
+                )
+            }
+            return left + right
+        }
+    }
+
+    private func translateSingleFallback(_ segment: TranscriptSegment) async -> ValidatedTranslation {
+        let language = detectedLanguage(for: segment.text, hint: segment.detectedLanguage)
+        var values = ["pt": "", "en": "", "de": ""]
+        for target in ["pt", "en", "de"] {
+            if language == target {
+                values[target] = segment.text
+            } else if let translated = try? await retryTranslation(segment.text, target: target) {
+                values[target] = translated
+            }
+        }
+        return ValidatedTranslation(
+            index: 0,
+            originalLanguage: language,
+            portuguese: values["pt", default: ""],
+            english: values["en", default: ""],
+            german: values["de", default: ""]
+        )
+    }
+
     private func translate(
         _ segments: [TranscriptSegment],
         exclusivelyTo target: String
     ) async throws -> [Int: String] {
         let targetName = targetLanguageName(target)
         let session = LanguageModelSession(instructions: """
-            You are a professional translator. Translate every input exclusively into \(targetName). Every output text field must be written in \(targetName), even when the source is English. Preserve names, numbers, dates and product terms. Never explain, summarize, answer the content, or use another language. Return exactly one item per index.
+            You are a professional translator. Translate every input exclusively into \(targetName), preserving names, numbers, dates and product terms. Never explain, summarize or answer the content. Return one plain-text line per input using exactly this format: [index] translation
             """)
-        let input = segments.enumerated().map { index, segment in
-            "[\(index)] \(segment.text)"
-        }.joined(separator: "\n")
+        var result: [Int: String] = [:]
+        let candidates = segments.enumerated().filter { index, segment in
+            let language = detectedLanguage(for: segment.text, hint: segment.detectedLanguage)
+            if language == target { result[index] = segment.text }
+            return language != target
+        }
+        guard !candidates.isEmpty else { return result }
+        let input = candidates.map { index, segment in "[\(index)] \(segment.text)" }
+            .joined(separator: "\n")
         let response = try await session.respond(
             to: "Translate these indexed meeting lines into \(targetName):\n\(input)",
-            generating: GeneratedSingleTranslationBatch.self
+            options: GenerationOptions(maximumResponseTokens: 650)
         )
 
-        var result: [Int: String] = [:]
-        for item in response.content.items where item.index >= 0 && item.index < segments.count {
-            let original = segments[item.index].text
+        for (index, text) in parseIndexedLines(response.content) where index >= 0 && index < segments.count {
+            let original = segments[index].text
             let originalLanguage = detectedLanguage(
                 for: original,
-                hint: segments[item.index].detectedLanguage
+                hint: segments[index].detectedLanguage
             )
             if originalLanguage == target {
-                result[item.index] = original
-            } else if languageMatches(item.text, target: target) {
-                result[item.index] = item.text
+                result[index] = original
+            } else if languageMatches(text, target: target) {
+                result[index] = text
             } else if let retried = try await retryTranslation(original, target: target) {
-                result[item.index] = retried
+                result[index] = retried
+            }
+        }
+        for (index, segment) in candidates where result[index] == nil {
+            if let retried = try await retryTranslation(segment.text, target: target) {
+                result[index] = retried
             }
         }
         return result
+    }
+
+    private func parseIndexedLines(_ value: String) -> [(Int, String)] {
+        value.split(whereSeparator: \.isNewline).compactMap { rawLine in
+            let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard line.first == "[", let closing = line.firstIndex(of: "]"),
+                  let index = Int(line[line.index(after: line.startIndex)..<closing]) else {
+                return nil
+            }
+            let text = line[line.index(after: closing)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "-:— "))
+            return text.isEmpty ? nil : (index, text)
+        }
     }
 
     private func retryTranslation(_ text: String, target: String) async throws -> String? {
@@ -126,7 +226,10 @@ private struct AppleIntelligenceProcessor {
         default: instruction = "Translate the text into English. Reply only with the English translation."
         }
         let session = LanguageModelSession(instructions: instruction)
-        let response = try await session.respond(to: "\(targetName):\n\(text)")
+        let response = try await session.respond(
+            to: "\(targetName):\n\(text)",
+            options: GenerationOptions(maximumResponseTokens: 320)
+        )
         let clean = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"“”"))
         return languageMatches(clean, target: target) ? clean : nil
@@ -162,33 +265,128 @@ private struct AppleIntelligenceProcessor {
         let transcriptLines = segments.map {
             "[\($0.timestamp)] \($0.source.label) (\($0.detectedLanguage)): \($0.text)"
         }
-        let chunks = chunk(transcriptLines, characterLimit: 6_000)
-        var factualNotes: [String] = []
-
-        for part in chunks {
-            let session = LanguageModelSession(instructions: """
-                Extract factual meeting notes. Keep explicit decisions, tasks, owners, deadlines and dates. Never infer an owner or date. Keep proper names exactly as spoken. Reply in Portuguese.
-                """)
-            let response = try await session.respond(to: part)
-            factualNotes.append(response.content)
+        let transcriptChunks = chunk(transcriptLines, characterLimit: analysisCharacterLimit)
+        var partialAnalyses: [MeetingAnalysis] = []
+        for (index, part) in transcriptChunks.enumerated() {
+            partialAnalyses.append(try await analyzeTranscriptChunk(part, number: index + 1))
         }
 
-        let finalSession = LanguageModelSession(instructions: """
-            Create a factual Portuguese meeting brief from extracted notes. Do not invent tasks, people, dates, decisions or commitments. When owner or deadline was not explicitly stated, use an empty string. Merge duplicates.
-            """)
-        let response = try await finalSession.respond(
-            to: factualNotes.joined(separator: "\n\n--- PARTE ---\n\n"),
-            generating: GeneratedAnalysis.self
-        )
-        let value = response.content
+        let merged = merge(partialAnalyses)
+        let summary = try await summarizeHierarchically(partialAnalyses.map(\.summary))
         return MeetingAnalysis(
-            summary: value.summary,
-            decisions: value.decisions,
-            actionItems: value.actionItems.map {
-                ActionItem(task: $0.task, owner: optional($0.owner), dueDate: optional($0.dueDate))
-            },
-            keyDates: value.keyDates.map { KeyDate(date: $0.date, context: $0.context) }
+            summary: summary,
+            decisions: merged.decisions,
+            actionItems: merged.actionItems,
+            keyDates: merged.keyDates
         )
+    }
+
+    private func analyzeTranscriptChunk(_ transcript: String, number: Int) async throws -> MeetingAnalysis {
+        let session = LanguageModelSession(instructions: """
+            Extract a compact factual meeting brief in Brazilian Portuguese from one transcript chunk. Keep every explicit decision, task, owner, deadline and important date. Never infer information. Keep names exactly as spoken. Limit the summary to 100 words and merge duplicates within this chunk. Use an empty string when an owner or deadline was not explicitly stated.
+            """)
+        let response = try await session.respond(
+            to: "Parte \(number) da reunião:\n\(transcript)",
+            generating: GeneratedAnalysis.self,
+            options: GenerationOptions(maximumResponseTokens: 900)
+        )
+        return meetingAnalysis(from: response.content)
+    }
+
+    private func summarizeHierarchically(_ summaries: [String]) async throws -> String {
+        var level = summaries
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !level.isEmpty else { return "Nenhum resumo disponível." }
+
+        while level.count > 1 {
+            let groups = chunk(level, characterLimit: summaryCharacterLimit)
+            var nextLevel: [String] = []
+            for group in groups {
+                let session = LanguageModelSession(instructions: """
+                    Combine partial meeting summaries into one concise factual summary in Brazilian Portuguese. Preserve decisions, commitments, names and dates. Do not invent information. Use at most 140 words.
+                    """)
+                let response = try await session.respond(
+                    to: group,
+                    options: GenerationOptions(maximumResponseTokens: 400)
+                )
+                let clean = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !clean.isEmpty { nextLevel.append(clean) }
+            }
+            guard !nextLevel.isEmpty else { return level.joined(separator: " ") }
+            level = nextLevel
+        }
+        return level[0]
+    }
+
+    private func merge(_ analyses: [MeetingAnalysis]) -> MeetingAnalysis {
+        var decisions: [String] = []
+        var actions: [ActionItem] = []
+        var dates: [KeyDate] = []
+
+        for analysis in analyses {
+            for decision in analysis.decisions where !contains(decision, in: decisions) {
+                decisions.append(decision)
+            }
+            for action in analysis.actionItems {
+                if let index = actions.firstIndex(where: {
+                    normalizedKey($0.task) == normalizedKey(action.task)
+                }) {
+                    if actions[index].owner == nil { actions[index].owner = action.owner }
+                    if actions[index].dueDate == nil { actions[index].dueDate = action.dueDate }
+                } else {
+                    actions.append(action)
+                }
+            }
+            for date in analysis.keyDates where !dates.contains(where: {
+                normalizedKey($0.date + " " + $0.context) == normalizedKey(date.date + " " + date.context)
+            }) {
+                dates.append(date)
+            }
+        }
+        return MeetingAnalysis(summary: "", decisions: decisions, actionItems: actions, keyDates: dates)
+    }
+
+    private func meetingAnalysis(from value: GeneratedAnalysis) -> MeetingAnalysis {
+        MeetingAnalysis(
+            summary: value.summary,
+            decisions: value.decisions.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty },
+            actionItems: value.actionItems.compactMap {
+                let task = $0.task.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !task.isEmpty else { return nil }
+                return ActionItem(task: task, owner: optional($0.owner), dueDate: optional($0.dueDate))
+            },
+            keyDates: value.keyDates.compactMap {
+                let date = $0.date.trimmingCharacters(in: .whitespacesAndNewlines)
+                let context = $0.context.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !date.isEmpty, !context.isEmpty else { return nil }
+                return KeyDate(date: date, context: context)
+            }
+        )
+    }
+
+    private func segmentBatches(
+        _ segments: [TranscriptSegment],
+        characterLimit: Int,
+        itemLimit: Int
+    ) -> [[Int]] {
+        var batches: [[Int]] = []
+        var current: [Int] = []
+        var currentCharacters = 0
+
+        for index in segments.indices {
+            let cost = segments[index].text.count + 16
+            if !current.isEmpty,
+               (currentCharacters + cost > characterLimit || current.count >= itemLimit) {
+                batches.append(current)
+                current = []
+                currentCharacters = 0
+            }
+            current.append(index)
+            currentCharacters += cost
+        }
+        if !current.isEmpty { batches.append(current) }
+        return batches
     }
 
     private func chunk(_ lines: [String], characterLimit: Int) -> [String] {
@@ -217,19 +415,16 @@ private struct AppleIntelligenceProcessor {
         let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return clean.isEmpty ? nil : clean
     }
-}
 
-@available(macOS 26.0, *)
-@Generable
-private struct GeneratedSingleTranslationBatch {
-    var items: [GeneratedSingleTranslation]
-}
+    private func contains(_ value: String, in values: [String]) -> Bool {
+        let key = normalizedKey(value)
+        return values.contains { normalizedKey($0) == key }
+    }
 
-@available(macOS 26.0, *)
-@Generable
-private struct GeneratedSingleTranslation {
-    var index: Int
-    var text: String
+    private func normalizedKey(_ value: String) -> String {
+        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 private struct ValidatedTranslation {

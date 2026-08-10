@@ -43,6 +43,7 @@ final class AppState: ObservableObject {
     @Published var elapsed: TimeInterval = 0
     @Published var processingMessage = ""
     @Published var analysisMeetingID: UUID?
+    @Published var translationMeetingID: UUID?
     @Published var transcriptionMeetingID: UUID?
     @Published var errorMessage: String?
     @Published var microphoneAccess: AccessStatus = .unknown
@@ -287,13 +288,11 @@ final class AppState: ObservableObject {
               !meetings[index].segments.isEmpty else { return }
         analysisMeetingID = meetingID
         do {
-            let result = try await intelligence.process(segments: meetings[index].segments)
+            var refreshedAnalysis = try await intelligence.analyze(segments: meetings[index].segments)
             guard let currentIndex = meetings.firstIndex(where: { $0.id == meetingID }) else {
                 analysisMeetingID = nil
                 return
             }
-            meetings[currentIndex].segments = result.segments
-            var refreshedAnalysis = result.analysis
             let previousActions = meetings[currentIndex].analysis?.actionItems ?? []
             for actionIndex in refreshedAnalysis.actionItems.indices {
                 if let previous = previousActions.first(where: {
@@ -307,8 +306,33 @@ final class AppState: ObservableObject {
             try store.save(meetings)
         } catch {
             errorMessage = error.localizedDescription
+            analysisMeetingID = nil
+            return
         }
         analysisMeetingID = nil
+        await translateMeeting(meetingID: meetingID)
+    }
+
+    func translateMeeting(meetingID: UUID) async {
+        guard translationMeetingID == nil,
+              let index = meetings.firstIndex(where: { $0.id == meetingID }),
+              !meetings[index].segments.isEmpty else { return }
+        translationMeetingID = meetingID
+        do {
+            let translated = try await intelligence.translate(segments: meetings[index].segments)
+            guard let currentIndex = meetings.firstIndex(where: { $0.id == meetingID }) else {
+                translationMeetingID = nil
+                return
+            }
+            meetings[currentIndex].segments = translated
+            try store.save(meetings)
+        } catch {
+            let prefix = meetings.first(where: { $0.id == meetingID })?.analysis == nil
+                ? "Não foi possível traduzir"
+                : "O resumo foi salvo, mas não foi possível concluir todas as traduções"
+            errorMessage = "\(prefix): \(error.localizedDescription)"
+        }
+        translationMeetingID = nil
     }
 
     func delete(_ meeting: Meeting) {

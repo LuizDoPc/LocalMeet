@@ -630,12 +630,15 @@ private struct MeetingDetailView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 300)
                 Button {
-                    Task { await state.analyze(meetingID: meeting.id) }
+                    Task { await state.translateMeeting(meetingID: meeting.id) }
                 } label: {
-                    Label("Refazer traduções", systemImage: "arrow.clockwise")
+                    Label(
+                        state.translationMeetingID == meeting.id ? "Traduzindo…" : "Refazer traduções",
+                        systemImage: state.translationMeetingID == meeting.id ? "ellipsis" : "arrow.clockwise"
+                    )
                 }
                 .buttonStyle(.borderless)
-                .disabled(state.analysisMeetingID != nil)
+                .disabled(state.analysisMeetingID != nil || state.translationMeetingID != nil)
                 Spacer()
                 Text("O original nunca é alterado")
                     .font(.caption)

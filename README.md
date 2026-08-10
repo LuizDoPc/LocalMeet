@@ -34,6 +34,7 @@
 - Reports whether microphone and system-audio signals were detected during capture.
 - Checkpoints each meeting and preserves recovery audio before transcription begins.
 - Resumes failed transcriptions from valid chunk checkpoints instead of starting over, and processes system audio and microphone serially to avoid local-model contention.
+- Shows explicit **Retry with Local LLM** and **Retry with Claude** actions when a preserved recording needs to be processed again.
 - Processes long meetings with bounded chunks and hierarchical summarization instead of sending the full transcript to one model context.
 - Saves summaries and action items before starting potentially long translation work.
 - Queues multiple meetings for background processing and shows separate progress for transcription, summary generation, and translations.

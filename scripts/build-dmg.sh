@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT_DIR="${0:A:h:h}"
 APP_PATH="$PROJECT_DIR/dist/LocalMeet.app"
-DMG_PATH="$PROJECT_DIR/dist/LocalMeet-1.6.3-Apple-Silicon.dmg"
+DMG_PATH="$PROJECT_DIR/dist/LocalMeet-1.6.4-Apple-Silicon.dmg"
 
 "$PROJECT_DIR/scripts/build-app.sh"
 

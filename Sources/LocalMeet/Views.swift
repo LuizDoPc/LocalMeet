@@ -801,11 +801,37 @@ private struct MeetingDetailView: View {
                                 )
                         }
                         .padding(.bottom, 6)
-                        Button("Tentar transcrever novamente") {
-                            Task { await state.retryTranscription(meetingID: meeting.id) }
+                        HStack(spacing: 10) {
+                            Button {
+                                Task {
+                                    await state.retryTranscription(
+                                        meetingID: meeting.id,
+                                        summaryProvider: .local
+                                    )
+                                }
+                            } label: {
+                                Label("Repetir com LLM local", systemImage: "cpu")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button {
+                                Task {
+                                    await state.retryTranscription(
+                                        meetingID: meeting.id,
+                                        summaryProvider: .claude
+                                    )
+                                }
+                            } label: {
+                                Label("Repetir com Claude", systemImage: "sparkles")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(!state.claudeIsAvailable)
                         }
-                        .buttonStyle(.borderedProminent)
                         .disabled(state.isQueuedOrProcessing(meeting.id))
+                        if !state.claudeIsAvailable {
+                            Text("Claude Code não foi encontrado neste Mac.")
+                                .font(.caption)
+                                .foregroundStyle(Theme.orange)
+                        }
                         Button("Mostrar áudio de recuperação") {
                             state.revealRecoveryAudio(meetingID: meeting.id)
                         }

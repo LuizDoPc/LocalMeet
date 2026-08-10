@@ -301,17 +301,26 @@ final class AppState: ObservableObject {
 
     }
 
-    func retryTranscription(meetingID: UUID) async {
+    func retryTranscription(
+        meetingID: UUID,
+        summaryProvider: SummaryProvider? = nil
+    ) async {
         let files = recoveryAudio.files(for: meetingID)
         guard !files.isEmpty else {
             let error = RecoveryAudioError.noAudio
             markTranscriptionFailure(meetingID: meetingID, error: error)
             return
         }
+        let provider = summaryProvider ?? selectedSummaryProvider
+        if provider == .claude, !claudeIsAvailable {
+            errorMessage = ClaudeCLIError.notInstalled.localizedDescription
+            return
+        }
+        selectSummaryProvider(provider)
         enqueue(
             meetingID: meetingID,
             kind: .fullPipeline,
-            summaryProvider: selectedSummaryProvider
+            summaryProvider: provider
         )
     }
 

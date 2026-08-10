@@ -176,6 +176,11 @@ final class AppState: ObservableObject {
         if isMicrophoneMuted { microphoneIsReceivingAudio = false }
     }
 
+    func showActiveRecording() {
+        guard recordingStatus != .idle else { return }
+        selection = nil
+    }
+
     func startRecording() async {
         recordingStatus = .preparing
         errorMessage = nil

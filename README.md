@@ -19,6 +19,7 @@
 
 - Captures **system audio and microphone separately**, even when people speak over each other.
 - Temporarily mutes only your microphone while system audio keeps recording; muted intervals are written as silence to preserve timeline alignment.
+- Lets you browse and edit previous meetings while recording, with persistent timer, microphone mute, and stop controls.
 - Transcribes meetings containing **Portuguese, English, and German** in the same conversation.
 - Detects language changes dynamically without replacing the original transcript.
 - Shows on-demand translations in all three languages and validates the generated language.

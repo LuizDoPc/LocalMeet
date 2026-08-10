@@ -20,12 +20,17 @@ struct RootView: View {
         } detail: {
             ZStack {
                 Theme.paper.ignoresSafeArea()
-                if state.recordingStatus != .idle {
-                    RecordingView()
-                } else if let meeting = state.selectedMeeting {
+                if let meeting = state.selectedMeeting {
                     MeetingDetailView(meeting: meeting)
+                } else if state.recordingStatus != .idle {
+                    RecordingView()
                 } else {
                     WelcomeView()
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if state.isRecording, state.selectedMeeting != nil {
+                    ActiveRecordingBar()
                 }
             }
         }
@@ -94,6 +99,32 @@ private struct SidebarView: View {
             .disabled(state.recordingStatus == .preparing || state.recordingStatus == .processing)
             .padding(.horizontal, 12)
             .keyboardShortcut("r", modifiers: [.command])
+
+            if state.isRecording {
+                Button {
+                    state.showActiveRecording()
+                } label: {
+                    HStack(spacing: 9) {
+                        Circle()
+                            .fill(Theme.orange)
+                            .frame(width: 8, height: 8)
+                        Text("Gravação em andamento")
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                        Text(state.elapsedLabel)
+                            .font(.caption.monospacedDigit())
+                    }
+                    .foregroundStyle(Theme.ink)
+                    .padding(.horizontal, 13)
+                    .frame(height: 36)
+                    .background(Theme.card.opacity(0.78))
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.top, 7)
+                .help("Voltar aos controles da gravação")
+            }
 
             HStack(spacing: 7) {
                 Image(systemName: "lock.fill")
@@ -185,6 +216,52 @@ private struct SidebarView: View {
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct ActiveRecordingBar: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(Theme.orange)
+                .frame(width: 8, height: 8)
+            Text("GRAVANDO")
+                .font(.caption2.weight(.bold))
+                .tracking(1)
+                .foregroundStyle(Theme.orange)
+            Text(state.elapsedLabel)
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(Theme.ink)
+            Text(state.isMicrophoneMuted ? "Microfone silenciado" : "Microfone + sistema")
+                .font(.caption)
+                .foregroundStyle(state.isMicrophoneMuted ? Theme.orange : Theme.muted)
+            Spacer()
+            Button {
+                state.toggleMicrophoneMute()
+            } label: {
+                Label(
+                    state.isMicrophoneMuted ? "Reativar microfone" : "Silenciar microfone",
+                    systemImage: state.isMicrophoneMuted ? "mic.fill" : "mic.slash.fill"
+                )
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(state.isMicrophoneMuted ? Theme.green : Theme.ink)
+            Button("Ver gravação") {
+                state.showActiveRecording()
+            }
+            .buttonStyle(.bordered)
+            Button("Encerrar") {
+                state.toggleRecording()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.orange)
+        }
+        .padding(.horizontal, 24)
+        .frame(height: 50)
+        .background(Theme.card)
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 

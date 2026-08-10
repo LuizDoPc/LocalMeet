@@ -29,6 +29,8 @@
 - Checkpoints each meeting and preserves recovery audio before transcription begins.
 - Processes long meetings with bounded chunks and hierarchical summarization instead of sending the full transcript to one model context.
 - Saves summaries and action items before starting potentially long translation work.
+- Queues multiple meetings for background processing and shows separate progress for transcription, summary generation, and translations.
+- Persists the processing queue so pending meetings resume in order after the app is reopened.
 
 ## Privacy
 
@@ -76,6 +78,9 @@ Microphone ────── AVFoundation ─────┘
                                                   ▼
                               on-device Apple Foundation Models
                          translation · summary · decisions · actions
+
+                         each meeting remains visible in a persistent
+                          local queue with per-stage progress tracking
 ```
 
 Both sources are transcribed independently and merged only after transcription using their timestamps. This keeps **You** and **Meeting** segments separate, including during overlapping speech.

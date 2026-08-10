@@ -29,18 +29,24 @@ struct LocalIntelligenceEngine: Sendable {
         return try await AppleIntelligenceProcessor().process(segments: segments)
     }
 
-    func analyze(segments: [TranscriptSegment]) async throws -> MeetingAnalysis {
+    func analyze(
+        segments: [TranscriptSegment],
+        progress: (@Sendable (Double) async -> Void)? = nil
+    ) async throws -> MeetingAnalysis {
         guard #available(macOS 26.0, *) else {
             throw LocalIntelligenceError.requiresMacOS26
         }
-        return try await AppleIntelligenceProcessor().analyzeMeeting(segments)
+        return try await AppleIntelligenceProcessor().analyzeMeeting(segments, progress: progress)
     }
 
-    func translate(segments: [TranscriptSegment]) async throws -> [TranscriptSegment] {
+    func translate(
+        segments: [TranscriptSegment],
+        progress: (@Sendable (Double) async -> Void)? = nil
+    ) async throws -> [TranscriptSegment] {
         guard #available(macOS 26.0, *) else {
             throw LocalIntelligenceError.requiresMacOS26
         }
-        return try await AppleIntelligenceProcessor().translateMeeting(segments)
+        return try await AppleIntelligenceProcessor().translateMeeting(segments, progress: progress)
     }
 }
 
@@ -51,19 +57,24 @@ private struct AppleIntelligenceProcessor {
     private let summaryCharacterLimit = 2_000
 
     func process(segments: [TranscriptSegment]) async throws -> IntelligenceResult {
-        let analysis = try await analyzeMeeting(segments)
-        let translated = try await translateMeeting(segments)
+        let analysis = try await analyzeMeeting(segments, progress: nil)
+        let translated = try await translateMeeting(segments, progress: nil)
         return IntelligenceResult(segments: translated, analysis: analysis)
     }
 
-    func translateMeeting(_ segments: [TranscriptSegment]) async throws -> [TranscriptSegment] {
+    func translateMeeting(
+        _ segments: [TranscriptSegment],
+        progress: (@Sendable (Double) async -> Void)?
+    ) async throws -> [TranscriptSegment] {
         try requireAvailableModel()
         var translated = segments
-        for indices in segmentBatches(
+        let batches = segmentBatches(
             translated,
             characterLimit: translationCharacterLimit,
             itemLimit: 8
-        ) {
+        )
+        await progress?(batches.isEmpty ? 1 : 0)
+        for (batchIndex, indices) in batches.enumerated() {
             let batch = indices.map { translated[$0] }
             let rows = await translateSafely(batch)
             for row in rows where row.index >= 0 && row.index < batch.count {
@@ -75,13 +86,17 @@ private struct AppleIntelligenceProcessor {
                     "de": row.german
                 ].filter { !$0.value.isEmpty }
             }
+            await progress?(Double(batchIndex + 1) / Double(max(1, batches.count)))
         }
         return translated
     }
 
-    func analyzeMeeting(_ segments: [TranscriptSegment]) async throws -> MeetingAnalysis {
+    func analyzeMeeting(
+        _ segments: [TranscriptSegment],
+        progress: (@Sendable (Double) async -> Void)?
+    ) async throws -> MeetingAnalysis {
         try requireAvailableModel()
-        return try await analyze(segments)
+        return try await analyze(segments, progress: progress)
     }
 
     private func requireAvailableModel() throws {
@@ -261,18 +276,25 @@ private struct AppleIntelligenceProcessor {
         return recognizer.dominantLanguage?.rawValue == target
     }
 
-    private func analyze(_ segments: [TranscriptSegment]) async throws -> MeetingAnalysis {
+    private func analyze(
+        _ segments: [TranscriptSegment],
+        progress: (@Sendable (Double) async -> Void)?
+    ) async throws -> MeetingAnalysis {
         let transcriptLines = segments.map {
             "[\($0.timestamp)] \($0.source.label) (\($0.detectedLanguage)): \($0.text)"
         }
         let transcriptChunks = chunk(transcriptLines, characterLimit: analysisCharacterLimit)
         var partialAnalyses: [MeetingAnalysis] = []
+        await progress?(0)
         for (index, part) in transcriptChunks.enumerated() {
             partialAnalyses.append(try await analyzeTranscriptChunk(part, number: index + 1))
+            await progress?(0.82 * Double(index + 1) / Double(max(1, transcriptChunks.count)))
         }
 
         let merged = merge(partialAnalyses)
+        await progress?(0.88)
         let summary = try await summarizeHierarchically(partialAnalyses.map(\.summary))
+        await progress?(1)
         return MeetingAnalysis(
             summary: summary,
             decisions: merged.decisions,

@@ -85,7 +85,10 @@ struct WhisperEngine: Sendable {
         try FileManager.default.moveItem(at: temporaryURL, to: modelURL)
     }
 
-    func transcribe(files: [AudioSource: URL]) async throws -> [TranscriptSegment] {
+    func transcribe(
+        files: [AudioSource: URL],
+        progress: (@Sendable (AudioSource, Double) async -> Void)? = nil
+    ) async throws -> [TranscriptSegment] {
         guard let executableURL else { throw WhisperError.executableMissing }
         guard FileManager.default.fileExists(atPath: modelURL.path) else {
             throw WhisperError.modelDownloadFailed
@@ -94,7 +97,12 @@ struct WhisperEngine: Sendable {
         return try await withThrowingTaskGroup(of: [TranscriptSegment].self) { group in
             for (source, fileURL) in files {
                 group.addTask {
-                    try await transcribe(file: fileURL, source: source, executableURL: executableURL)
+                    try await transcribe(
+                        file: fileURL,
+                        source: source,
+                        executableURL: executableURL,
+                        progress: progress
+                    )
                 }
             }
             var all: [TranscriptSegment] = []
@@ -106,9 +114,11 @@ struct WhisperEngine: Sendable {
     private func transcribe(
         file: URL,
         source: AudioSource,
-        executableURL: URL
+        executableURL: URL,
+        progress: (@Sendable (AudioSource, Double) async -> Void)?
     ) async throws -> [TranscriptSegment] {
         try await Task.detached(priority: .userInitiated) {
+            await progress?(source, 0.02)
             let directory = file.deletingLastPathComponent()
             let waveURL = directory.appendingPathComponent("\(source.rawValue).wav")
 
@@ -119,9 +129,11 @@ struct WhisperEngine: Sendable {
             guard conversion.status == 0 else {
                 throw WhisperError.conversionFailed(conversion.output)
             }
+            await progress?(source, 0.08)
 
             let chunks = try makeAudioChunks(waveURL: waveURL, directory: directory, source: source)
             var segments: [TranscriptSegment] = []
+            await progress?(source, chunks.isEmpty ? 1 : 0.10)
 
             // Each short window runs language detection again, allowing code-switching
             // between Portuguese, English and German during one meeting.
@@ -162,6 +174,8 @@ struct WhisperEngine: Sendable {
                         detectedLanguage: language
                     )
                 }
+                let fraction = 0.10 + 0.90 * Double(chunkIndex + 1) / Double(max(1, chunks.count))
+                await progress?(source, fraction)
             }
             return segments
         }.value

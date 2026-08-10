@@ -114,6 +114,11 @@ private struct SidebarView: View {
                     .tracking(1.2)
                     .foregroundStyle(Theme.muted)
                 Spacer()
+                if !state.processingQueue.isEmpty {
+                    Label("\(state.processingQueue.count) na fila", systemImage: "list.number")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Theme.orange)
+                }
                 Text("\(state.meetings.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(Theme.muted)
@@ -147,6 +152,7 @@ private struct SidebarView: View {
                             Button("Exportar Markdown") { state.export(meeting) }
                             Divider()
                             Button("Apagar", role: .destructive) { state.delete(meeting) }
+                                .disabled(state.isQueuedOrProcessing(meeting.id))
                         }
                 }
             }
@@ -183,6 +189,7 @@ private struct SidebarView: View {
 }
 
 private struct MeetingRow: View {
+    @EnvironmentObject private var state: AppState
     let meeting: Meeting
 
     var body: some View {
@@ -197,8 +204,39 @@ private struct MeetingRow: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+            if let progress = state.processingProgress[meeting.id], progress.isVisible {
+                HStack(spacing: 5) {
+                    Image(systemName: progressIcon(progress.stage))
+                    Text(progress.stage.label)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Text(progress.activeFraction, format: .percent.precision(.fractionLength(0)))
+                        .monospacedDigit()
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(progressColor(progress.stage))
+                ProgressView(value: progress.activeFraction)
+                    .progressViewStyle(.linear)
+                    .tint(progressColor(progress.stage))
+            }
         }
         .padding(.vertical, 6)
+    }
+
+    private func progressIcon(_ stage: MeetingProcessingStage) -> String {
+        switch stage {
+        case .queued: "clock"
+        case .transcribing: "waveform"
+        case .summarizing: "sparkles"
+        case .translating: "character.bubble"
+        case .completed: "checkmark.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private func progressColor(_ stage: MeetingProcessingStage) -> Color {
+        if case .failed = stage { return Theme.orange }
+        return Theme.green
     }
 }
 
@@ -566,12 +604,22 @@ private struct MeetingDetailView: View {
             .background(Theme.card)
             .overlay(alignment: .bottom) { Divider() }
 
+            if let progress = state.processingProgress[meeting.id], progress.isVisible {
+                MeetingPipelineProgressView(progress: progress)
+                    .padding(.horizontal, 30)
+                    .padding(.vertical, 14)
+                    .background(Theme.card.opacity(0.78))
+                    .overlay(alignment: .bottom) { Divider() }
+            }
+
             if meeting.segments.isEmpty {
                 ContentUnavailableView {
                     Label(
                         state.transcriptionMeetingID == meeting.id
                             ? "Transcrevendo áudio preservado…"
-                            : "Transcrição não concluída",
+                            : state.isQueuedOrProcessing(meeting.id)
+                                ? "Reunião aguardando na fila"
+                                : "Transcrição não concluída",
                         systemImage: state.transcriptionMeetingID == meeting.id
                             ? "waveform.badge.magnifyingglass"
                             : "externaldrive.badge.exclamationmark"
@@ -579,6 +627,8 @@ private struct MeetingDetailView: View {
                 } description: {
                     if state.transcriptionMeetingID == meeting.id {
                         Text("As trilhas do microfone e do áudio do sistema continuam protegidas no Mac.")
+                    } else if state.isQueuedOrProcessing(meeting.id) {
+                        Text("O áudio está preservado. O LocalMeet começará esta reunião quando as anteriores terminarem.")
                     } else if state.hasRecoveryAudio(for: meeting.id) {
                         Text(meeting.transcriptionError ?? "O áudio está preservado e pode ser transcrito novamente.")
                     } else {
@@ -590,7 +640,7 @@ private struct MeetingDetailView: View {
                             Task { await state.retryTranscription(meetingID: meeting.id) }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(state.transcriptionMeetingID != nil)
+                        .disabled(state.isQueuedOrProcessing(meeting.id))
                         Button("Mostrar áudio de recuperação") {
                             state.revealRecoveryAudio(meetingID: meeting.id)
                         }
@@ -638,7 +688,7 @@ private struct MeetingDetailView: View {
                     )
                 }
                 .buttonStyle(.borderless)
-                .disabled(state.analysisMeetingID != nil || state.translationMeetingID != nil)
+                .disabled(state.isQueuedOrProcessing(meeting.id))
                 Spacer()
                 Text("O original nunca é alterado")
                     .font(.caption)
@@ -763,6 +813,7 @@ private struct AnalysisView: View {
                         Task { await state.analyze(meetingID: meeting.id) }
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(state.isQueuedOrProcessing(meeting.id))
                 }
             }
         }
@@ -787,6 +838,76 @@ private struct AnalysisView: View {
         .background(Theme.card)
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay { RoundedRectangle(cornerRadius: 14).stroke(Theme.line) }
+    }
+}
+
+private struct MeetingPipelineProgressView: View {
+    let progress: MeetingProcessingProgress
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 8) {
+                Image(systemName: stageIcon)
+                    .foregroundStyle(stageColor)
+                Text(progress.stage.label)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if case .queued(let position) = progress.stage {
+                    Text("#\(position)")
+                        .font(.caption.monospacedDigit().weight(.bold))
+                        .foregroundStyle(Theme.muted)
+                }
+            }
+            HStack(spacing: 18) {
+                PipelineProgressBar(title: "Transcrição", value: progress.transcription)
+                PipelineProgressBar(title: "Resumo", value: progress.summary)
+                PipelineProgressBar(title: "Traduções", value: progress.translation)
+            }
+            if case .failed(let message) = progress.stage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(Theme.orange)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    private var stageIcon: String {
+        switch progress.stage {
+        case .queued: "clock"
+        case .transcribing: "waveform"
+        case .summarizing: "sparkles"
+        case .translating: "character.bubble"
+        case .completed: "checkmark.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var stageColor: Color {
+        if case .failed = progress.stage { return Theme.orange }
+        return Theme.green
+    }
+}
+
+private struct PipelineProgressBar: View {
+    let title: String
+    let value: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Text(value, format: .percent.precision(.fractionLength(0)))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(Theme.muted)
+            }
+            ProgressView(value: value)
+                .progressViewStyle(.linear)
+                .tint(value >= 1 ? Theme.green : Theme.orange)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

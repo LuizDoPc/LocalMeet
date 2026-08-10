@@ -87,6 +87,58 @@ import Testing
     #expect(store.files(for: meetingID).isEmpty)
 }
 
+@Test func processingQueuePersistsOrderAndProgressStartsAtTheRightStage() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("localmeet-queue-test-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let firstID = UUID()
+    let secondID = UUID()
+    let requests = [
+        ProcessingRequest(meetingID: firstID, kind: .fullPipeline),
+        ProcessingRequest(meetingID: secondID, kind: .translationOnly)
+    ]
+    let store = ProcessingQueueStore(baseDirectory: directory)
+    try store.save(requests)
+    #expect(store.load() == requests)
+
+    let emptyMeeting = Meeting(
+        id: firstID,
+        title: "Aguardando",
+        startedAt: Date(),
+        duration: 30,
+        localeIdentifier: "pt+en+de",
+        segments: []
+    )
+    let emptyProgress = MeetingProcessingProgress.queued(position: 2, meeting: emptyMeeting)
+    #expect(emptyProgress.stage == .queued(position: 2))
+    #expect(emptyProgress.transcription == 0)
+    #expect(emptyProgress.summary == 0)
+    #expect(emptyProgress.translation == 0)
+
+    let translatedMeeting = Meeting(
+        id: secondID,
+        title: "Pronta",
+        startedAt: Date(),
+        duration: 30,
+        localeIdentifier: "pt+en+de",
+        segments: [
+            TranscriptSegment(
+                source: .meeting,
+                offset: 0,
+                text: "Hallo",
+                detectedLanguage: "de",
+                translations: ["pt": "Olá", "en": "Hello", "de": "Hallo"]
+            )
+        ],
+        analysis: MeetingAnalysis(summary: "Resumo", decisions: [], actionItems: [], keyDates: [])
+    )
+    let translatedProgress = MeetingProcessingProgress.queued(position: 1, meeting: translatedMeeting)
+    #expect(translatedProgress.transcription == 1)
+    #expect(translatedProgress.summary == 1)
+    #expect(translatedProgress.translation == 1)
+}
+
 @Test func localMultilingualIntelligence() async throws {
     guard ProcessInfo.processInfo.environment["LOCALMEET_AI_TEST"] == "1" else { return }
     let segments = [

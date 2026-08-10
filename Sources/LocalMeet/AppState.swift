@@ -45,6 +45,8 @@ final class AppState: ObservableObject {
     @Published var analysisMeetingID: UUID?
     @Published var translationMeetingID: UUID?
     @Published var transcriptionMeetingID: UUID?
+    @Published private(set) var processingQueue: [ProcessingRequest] = []
+    @Published private(set) var processingProgress: [UUID: MeetingProcessingProgress] = [:]
     @Published var errorMessage: String?
     @Published var microphoneAccess: AccessStatus = .unknown
     @Published var systemAudioAccess: AccessStatus = .unknown
@@ -56,12 +58,14 @@ final class AppState: ObservableObject {
     private let store: MeetingStore
     private let whisper: WhisperEngine
     private let recoveryAudio: RecoveryAudioStore
+    private let queueStore: ProcessingQueueStore
     private let intelligence = LocalIntelligenceEngine()
     private var captureEngine: MeetingCaptureEngine?
     private var microphoneEngine: MicrophoneCaptureEngine?
     private var audioRecorder: TemporaryAudioRecorder?
     private var timer: Timer?
     private var startedAt: Date?
+    private var queueWorker: Task<Void, Never>?
 
     init(
         store: MeetingStore = MeetingStore(),
@@ -71,12 +75,18 @@ final class AppState: ObservableObject {
         self.store = store
         self.whisper = whisper
         self.recoveryAudio = recoveryAudio ?? RecoveryAudioStore(baseDirectory: whisper.applicationSupport)
+        queueStore = ProcessingQueueStore(baseDirectory: whisper.applicationSupport)
         meetings = store.load().sorted { $0.startedAt > $1.startedAt }
+        let meetingIDs = Set(meetings.map(\.id))
+        processingQueue = queueStore.load().filter { meetingIDs.contains($0.meetingID) }
         selection = meetings.first?.id
+        restoreQueueProgress()
+        try? queueStore.save(processingQueue)
         refreshMicrophones()
         Task { @MainActor [weak self] in
             self?.refreshModelStatus()
             self?.refreshPermissionStatus()
+            self?.startQueueWorker()
         }
     }
 
@@ -244,10 +254,9 @@ final class AppState: ObservableObject {
 
         do {
             processingMessage = "Preservando o áudio antes da transcrição…"
-            let preservedFiles = try recoveryAudio.preserve(files: files, meetingID: meetingID)
+            _ = try recoveryAudio.preserve(files: files, meetingID: meetingID)
             audioRecorder?.removeTemporaryFiles()
-            processingMessage = "Detectando idiomas e transcrevendo no Mac…"
-            await transcribePreservedMeeting(meetingID: meetingID, files: preservedFiles)
+            enqueue(meetingID: meetingID, kind: .fullPipeline)
         } catch {
             markTranscriptionFailure(meetingID: meetingID, error: error)
         }
@@ -262,18 +271,21 @@ final class AppState: ObservableObject {
     }
 
     func retryTranscription(meetingID: UUID) async {
-        guard transcriptionMeetingID == nil else { return }
         let files = recoveryAudio.files(for: meetingID)
         guard !files.isEmpty else {
             let error = RecoveryAudioError.noAudio
             markTranscriptionFailure(meetingID: meetingID, error: error)
             return
         }
-        await transcribePreservedMeeting(meetingID: meetingID, files: files)
+        enqueue(meetingID: meetingID, kind: .fullPipeline)
     }
 
     func hasRecoveryAudio(for meetingID: UUID) -> Bool {
         !recoveryAudio.files(for: meetingID).isEmpty
+    }
+
+    func isQueuedOrProcessing(_ meetingID: UUID) -> Bool {
+        processingQueue.contains { $0.meetingID == meetingID }
     }
 
     func revealRecoveryAudio(meetingID: UUID) {
@@ -283,59 +295,21 @@ final class AppState: ObservableObject {
     }
 
     func analyze(meetingID: UUID) async {
-        guard analysisMeetingID == nil,
-              let index = meetings.firstIndex(where: { $0.id == meetingID }),
-              !meetings[index].segments.isEmpty else { return }
-        analysisMeetingID = meetingID
-        do {
-            var refreshedAnalysis = try await intelligence.analyze(segments: meetings[index].segments)
-            guard let currentIndex = meetings.firstIndex(where: { $0.id == meetingID }) else {
-                analysisMeetingID = nil
-                return
-            }
-            let previousActions = meetings[currentIndex].analysis?.actionItems ?? []
-            for actionIndex in refreshedAnalysis.actionItems.indices {
-                if let previous = previousActions.first(where: {
-                    $0.task.localizedCaseInsensitiveCompare(refreshedAnalysis.actionItems[actionIndex].task) == .orderedSame
-                }) {
-                    refreshedAnalysis.actionItems[actionIndex].isCompleted = previous.isCompleted
-                    refreshedAnalysis.actionItems[actionIndex].completedAt = previous.completedAt
-                }
-            }
-            meetings[currentIndex].analysis = refreshedAnalysis
-            try store.save(meetings)
-        } catch {
-            errorMessage = error.localizedDescription
-            analysisMeetingID = nil
-            return
-        }
-        analysisMeetingID = nil
-        await translateMeeting(meetingID: meetingID)
+        guard let meeting = meetings.first(where: { $0.id == meetingID }),
+              !meeting.segments.isEmpty else { return }
+        enqueue(meetingID: meetingID, kind: .summaryAndTranslation)
     }
 
     func translateMeeting(meetingID: UUID) async {
-        guard translationMeetingID == nil,
-              let index = meetings.firstIndex(where: { $0.id == meetingID }),
-              !meetings[index].segments.isEmpty else { return }
-        translationMeetingID = meetingID
-        do {
-            let translated = try await intelligence.translate(segments: meetings[index].segments)
-            guard let currentIndex = meetings.firstIndex(where: { $0.id == meetingID }) else {
-                translationMeetingID = nil
-                return
-            }
-            meetings[currentIndex].segments = translated
-            try store.save(meetings)
-        } catch {
-            let prefix = meetings.first(where: { $0.id == meetingID })?.analysis == nil
-                ? "Não foi possível traduzir"
-                : "O resumo foi salvo, mas não foi possível concluir todas as traduções"
-            errorMessage = "\(prefix): \(error.localizedDescription)"
-        }
-        translationMeetingID = nil
+        guard let meeting = meetings.first(where: { $0.id == meetingID }),
+              !meeting.segments.isEmpty else { return }
+        enqueue(meetingID: meetingID, kind: .translationOnly)
     }
 
     func delete(_ meeting: Meeting) {
+        processingQueue.removeAll { $0.meetingID == meeting.id }
+        processingProgress.removeValue(forKey: meeting.id)
+        persistQueue()
         meetings.removeAll { $0.id == meeting.id }
         if selection == meeting.id { selection = meetings.first?.id }
         try? store.save(meetings)
@@ -470,38 +444,239 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func transcribePreservedMeeting(
-        meetingID: UUID,
-        files: [AudioSource: URL]
-    ) async {
-        guard transcriptionMeetingID == nil,
-              let index = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
+    private func enqueue(meetingID: UUID, kind: ProcessingRequestKind) {
+        guard meetings.contains(where: { $0.id == meetingID }) else { return }
+        guard !processingQueue.contains(where: { $0.meetingID == meetingID }) else { return }
+
+        processingQueue.append(ProcessingRequest(meetingID: meetingID, kind: kind))
+        refreshQueuePositions()
+        persistQueue()
+        startQueueWorker()
+    }
+
+    private func startQueueWorker() {
+        guard queueWorker == nil, !processingQueue.isEmpty else { return }
+        queueWorker = Task { @MainActor [weak self] in
+            await self?.drainProcessingQueue()
+        }
+    }
+
+    private func drainProcessingQueue() async {
+        while let request = processingQueue.first {
+            await process(request)
+            if processingQueue.first == request {
+                processingQueue.removeFirst()
+            } else {
+                processingQueue.removeAll { $0 == request }
+            }
+            refreshQueuePositions()
+            persistQueue()
+        }
+        queueWorker = nil
+        if !processingQueue.isEmpty { startQueueWorker() }
+    }
+
+    private func process(_ request: ProcessingRequest) async {
+        guard meetings.contains(where: { $0.id == request.meetingID }) else { return }
+
+        do {
+            switch request.kind {
+            case .fullPipeline:
+                if meetings.first(where: { $0.id == request.meetingID })?.segments.isEmpty != false {
+                    try await performTranscription(meetingID: request.meetingID)
+                }
+                try await performSummary(meetingID: request.meetingID)
+                try await performTranslation(meetingID: request.meetingID)
+            case .summaryAndTranslation:
+                try await performSummary(meetingID: request.meetingID)
+                try await performTranslation(meetingID: request.meetingID)
+            case .translationOnly:
+                try await performTranslation(meetingID: request.meetingID)
+            }
+            processingProgress[request.meetingID] = MeetingProcessingProgress(
+                stage: .completed,
+                transcription: 1,
+                summary: meetings.first(where: { $0.id == request.meetingID })?.analysis == nil ? 0 : 1,
+                translation: 1
+            )
+        } catch {
+            refreshModelStatus()
+            if case .transcribing = processingProgress[request.meetingID]?.stage {
+                markTranscriptionFailure(meetingID: request.meetingID, error: error)
+            } else {
+                let prefix: String
+                if case .translating = processingProgress[request.meetingID]?.stage,
+                   meetings.first(where: { $0.id == request.meetingID })?.analysis != nil {
+                    prefix = "O resumo foi salvo, mas as traduções não foram concluídas"
+                } else {
+                    prefix = "Não foi possível concluir o processamento"
+                }
+                errorMessage = "\(prefix): \(error.localizedDescription)"
+            }
+            var progress = processingProgress[request.meetingID]
+                ?? progressSnapshot(meetingID: request.meetingID, stage: .failed(error.localizedDescription))
+            progress.stage = .failed(error.localizedDescription)
+            processingProgress[request.meetingID] = progress
+        }
+
+        transcriptionMeetingID = nil
+        analysisMeetingID = nil
+        translationMeetingID = nil
+    }
+
+    private func performTranscription(meetingID: UUID) async throws {
+        guard let index = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
+        let files = recoveryAudio.files(for: meetingID)
+        guard !files.isEmpty else { throw RecoveryAudioError.noAudio }
+
         transcriptionMeetingID = meetingID
         meetings[index].transcriptionAttemptCount += 1
         meetings[index].transcriptionError = nil
+        processingProgress[meetingID] = progressSnapshot(meetingID: meetingID, stage: .transcribing)
         persistMeetings()
 
-        do {
-            let segments = try await whisper.transcribe(files: files)
-            guard !segments.isEmpty else { throw WhisperError.noSpeechRecognized }
-            guard let currentIndex = meetings.firstIndex(where: { $0.id == meetingID }) else {
-                transcriptionMeetingID = nil
-                return
-            }
-            meetings[currentIndex].segments = segments
-            meetings[currentIndex].transcriptionError = nil
-            try store.save(meetings)
-            do {
-                try recoveryAudio.remove(meetingID: meetingID)
-            } catch {
-                errorMessage = "A transcrição foi salva, mas o áudio temporário não pôde ser removido: \(error.localizedDescription)"
-            }
-            transcriptionMeetingID = nil
-            Task { await analyze(meetingID: meetingID) }
-        } catch {
-            markTranscriptionFailure(meetingID: meetingID, error: error)
-            transcriptionMeetingID = nil
+        if !whisper.isReady {
+            modelStatus = .downloading
+            try await whisper.ensureModel()
+            modelStatus = .ready
         }
+
+        let accumulator = AudioProgressAccumulator(sources: Array(files.keys))
+        let segments = try await whisper.transcribe(files: files) { [weak self] source, fraction in
+            let combined = await accumulator.update(source: source, fraction: fraction)
+            await self?.setTranscriptionProgress(meetingID: meetingID, fraction: combined)
+        }
+        guard !segments.isEmpty else { throw WhisperError.noSpeechRecognized }
+        guard let currentIndex = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
+        meetings[currentIndex].segments = segments
+        meetings[currentIndex].transcriptionError = nil
+        try store.save(meetings)
+        setTranscriptionProgress(meetingID: meetingID, fraction: 1)
+        transcriptionMeetingID = nil
+
+        do {
+            try recoveryAudio.remove(meetingID: meetingID)
+        } catch {
+            errorMessage = "A transcrição foi salva, mas o áudio temporário não pôde ser removido: \(error.localizedDescription)"
+        }
+    }
+
+    private func performSummary(meetingID: UUID) async throws {
+        guard let index = meetings.firstIndex(where: { $0.id == meetingID }),
+              !meetings[index].segments.isEmpty else { throw WhisperError.noSpeechRecognized }
+        analysisMeetingID = meetingID
+        updateStage(meetingID: meetingID, stage: .summarizing)
+
+        var refreshedAnalysis = try await intelligence.analyze(
+            segments: meetings[index].segments
+        ) { [weak self] fraction in
+            await self?.setSummaryProgress(meetingID: meetingID, fraction: fraction)
+        }
+        guard let currentIndex = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
+        let previousActions = meetings[currentIndex].analysis?.actionItems ?? []
+        for actionIndex in refreshedAnalysis.actionItems.indices {
+            if let previous = previousActions.first(where: {
+                $0.task.localizedCaseInsensitiveCompare(refreshedAnalysis.actionItems[actionIndex].task) == .orderedSame
+            }) {
+                refreshedAnalysis.actionItems[actionIndex].isCompleted = previous.isCompleted
+                refreshedAnalysis.actionItems[actionIndex].completedAt = previous.completedAt
+            }
+        }
+        meetings[currentIndex].analysis = refreshedAnalysis
+        try store.save(meetings)
+        setSummaryProgress(meetingID: meetingID, fraction: 1)
+        analysisMeetingID = nil
+    }
+
+    private func performTranslation(meetingID: UUID) async throws {
+        guard let index = meetings.firstIndex(where: { $0.id == meetingID }),
+              !meetings[index].segments.isEmpty else { throw WhisperError.noSpeechRecognized }
+        translationMeetingID = meetingID
+        updateStage(meetingID: meetingID, stage: .translating)
+        let translated = try await intelligence.translate(
+            segments: meetings[index].segments
+        ) { [weak self] fraction in
+            await self?.setTranslationProgress(meetingID: meetingID, fraction: fraction)
+        }
+        guard let currentIndex = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
+        meetings[currentIndex].segments = translated
+        try store.save(meetings)
+        setTranslationProgress(meetingID: meetingID, fraction: 1)
+        translationMeetingID = nil
+    }
+
+    private func setTranscriptionProgress(meetingID: UUID, fraction: Double) {
+        var progress = processingProgress[meetingID]
+            ?? progressSnapshot(meetingID: meetingID, stage: .transcribing)
+        progress.stage = .transcribing
+        progress.transcription = clamped(fraction)
+        processingProgress[meetingID] = progress
+    }
+
+    private func setSummaryProgress(meetingID: UUID, fraction: Double) {
+        var progress = processingProgress[meetingID]
+            ?? progressSnapshot(meetingID: meetingID, stage: .summarizing)
+        progress.stage = .summarizing
+        progress.summary = clamped(fraction)
+        processingProgress[meetingID] = progress
+    }
+
+    private func setTranslationProgress(meetingID: UUID, fraction: Double) {
+        var progress = processingProgress[meetingID]
+            ?? progressSnapshot(meetingID: meetingID, stage: .translating)
+        progress.stage = .translating
+        progress.translation = clamped(fraction)
+        processingProgress[meetingID] = progress
+    }
+
+    private func updateStage(meetingID: UUID, stage: MeetingProcessingStage) {
+        var progress = processingProgress[meetingID] ?? progressSnapshot(meetingID: meetingID, stage: stage)
+        progress.stage = stage
+        processingProgress[meetingID] = progress
+    }
+
+    private func progressSnapshot(
+        meetingID: UUID,
+        stage: MeetingProcessingStage
+    ) -> MeetingProcessingProgress {
+        guard let meeting = meetings.first(where: { $0.id == meetingID }) else {
+            return MeetingProcessingProgress(stage: stage, transcription: 0, summary: 0, translation: 0)
+        }
+        var snapshot = MeetingProcessingProgress.queued(position: 1, meeting: meeting)
+        snapshot.stage = stage
+        return snapshot
+    }
+
+    private func restoreQueueProgress() {
+        for (index, request) in processingQueue.enumerated() {
+            guard let meeting = meetings.first(where: { $0.id == request.meetingID }) else { continue }
+            processingProgress[request.meetingID] = .queued(position: index + 1, meeting: meeting)
+        }
+    }
+
+    private func refreshQueuePositions() {
+        for (index, request) in processingQueue.enumerated() {
+            guard let meeting = meetings.first(where: { $0.id == request.meetingID }) else { continue }
+            if index > 0 || {
+                guard let current = processingProgress[request.meetingID] else { return true }
+                if case .queued = current.stage { return true }
+                return false
+            }() {
+                processingProgress[request.meetingID] = .queued(position: index + 1, meeting: meeting)
+            }
+        }
+    }
+
+    private func persistQueue() {
+        do {
+            try queueStore.save(processingQueue)
+        } catch {
+            errorMessage = "Não foi possível salvar a fila de processamento: \(error.localizedDescription)"
+        }
+    }
+
+    private func clamped(_ fraction: Double) -> Double {
+        min(1, max(0, fraction))
     }
 
     private func markTranscriptionFailure(meetingID: UUID, error: Error) {

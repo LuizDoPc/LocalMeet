@@ -235,6 +235,7 @@ private struct MeetingRow: View {
     }
 
     private func progressColor(_ stage: MeetingProcessingStage) -> Color {
+        if state.selection == meeting.id { return .white }
         if case .failed = stage { return Theme.orange }
         return Theme.green
     }

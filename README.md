@@ -18,6 +18,7 @@
 ## Features
 
 - Captures **system audio and microphone separately**, even when people speak over each other.
+- Temporarily mutes only your microphone while system audio keeps recording; muted intervals are written as silence to preserve timeline alignment.
 - Transcribes meetings containing **Portuguese, English, and German** in the same conversation.
 - Detects language changes dynamically without replacing the original transcript.
 - Shows on-demand translations in all three languages and validates the generated language.
@@ -84,6 +85,8 @@ Microphone ────── AVFoundation ─────┘
 ```
 
 Both sources are transcribed independently and merged only after transcription using their timestamps. This keeps **You** and **Meeting** segments separate, including during overlapping speech.
+
+During a recording, use **Mute my microphone** or press `Shift-Command-M` for private side conversations. The system-audio track is unaffected, and unmuting resumes your microphone on the same timeline.
 
 ## Development
 

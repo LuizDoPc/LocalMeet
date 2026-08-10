@@ -214,6 +214,9 @@ import Testing
     let output = FileManager.default.temporaryDirectory
         .appendingPathComponent("localmeet-capture-\(UUID().uuidString).caf")
     defer { try? FileManager.default.removeItem(at: output) }
+    let mutedRecorder = try TemporaryAudioRecorder()
+    defer { mutedRecorder.removeTemporaryFiles() }
+    mutedRecorder.setMicrophoneMuted(true)
 
     let asset = AVURLAsset(url: sample)
     let track = try #require(try await asset.loadTracks(withMediaType: .audio).first)
@@ -225,11 +228,18 @@ import Testing
     let writer = SampleBufferChannelWriter(url: output)
     while let sampleBuffer = readerOutput.copyNextSampleBuffer() {
         writer.append(sampleBuffer)
+        mutedRecorder.appendMicrophone(sampleBuffer)
     }
     let capturedURL = writer.finish()
+    let mutedURL = try #require(await mutedRecorder.finish()[.microphone])
     #expect(capturedURL != nil)
     #expect(writer.receivedSignal)
+    #expect(!mutedRecorder.microphoneHasData)
     #expect((try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) ?? 0 > 10_000)
+
+    let originalAudio = try AVAudioFile(forReading: output)
+    let mutedAudio = try AVAudioFile(forReading: mutedURL)
+    #expect(mutedAudio.length == originalAudio.length)
 }
 
 @Test func dynamicLanguageSwitching() async throws {

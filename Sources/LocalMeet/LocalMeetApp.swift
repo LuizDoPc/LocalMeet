@@ -17,6 +17,11 @@ struct LocalMeetApp: App {
                     state.toggleRecording()
                 }
                 .keyboardShortcut("r", modifiers: [.command])
+                Button(state.isMicrophoneMuted ? "Reativar meu microfone" : "Silenciar meu microfone") {
+                    state.toggleMicrophoneMute()
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .disabled(!state.isRecording)
             }
         }
 

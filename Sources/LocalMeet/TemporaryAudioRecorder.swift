@@ -24,9 +24,10 @@ final class SampleBufferChannelWriter {
         self.url = url
     }
 
-    func append(_ sampleBuffer: CMSampleBuffer) {
+    func append(_ sampleBuffer: CMSampleBuffer, silenced: Bool = false) {
         do {
             let buffer = try pcmBuffer(from: sampleBuffer)
+            if silenced { replaceAudioWithSilence(buffer) }
             if file == nil {
                 file = try AVAudioFile(
                     forWriting: url,
@@ -102,9 +103,11 @@ final class SampleBufferChannelWriter {
 
 final class TemporaryAudioRecorder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "app.localmeet.audio-files", qos: .userInitiated)
+    private let muteLock = NSLock()
     let directory: URL
     private let systemWriter: SampleBufferChannelWriter
     private let microphoneWriter: SampleBufferChannelWriter
+    private var microphoneMuted = false
 
     init() throws {
         directory = FileManager.default.temporaryDirectory
@@ -122,9 +125,18 @@ final class TemporaryAudioRecorder: @unchecked Sendable {
     }
 
     func appendMicrophone(_ sampleBuffer: CMSampleBuffer) {
+        muteLock.lock()
+        let silenced = microphoneMuted
+        muteLock.unlock()
         queue.async { [weak self] in
-            self?.microphoneWriter.append(sampleBuffer)
+            self?.microphoneWriter.append(sampleBuffer, silenced: silenced)
         }
+    }
+
+    func setMicrophoneMuted(_ muted: Bool) {
+        muteLock.lock()
+        microphoneMuted = muted
+        muteLock.unlock()
     }
 
     var microphoneHasData: Bool {
@@ -164,6 +176,14 @@ final class TemporaryAudioRecorder: @unchecked Sendable {
 
     func removeTemporaryFiles() {
         try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+private func replaceAudioWithSilence(_ buffer: AVAudioPCMBuffer) {
+    let buffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+    for audioBuffer in buffers {
+        guard let data = audioBuffer.mData else { continue }
+        memset(data, 0, Int(audioBuffer.mDataByteSize))
     }
 }
 

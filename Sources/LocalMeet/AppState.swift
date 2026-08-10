@@ -52,6 +52,7 @@ final class AppState: ObservableObject {
     @Published var systemAudioAccess: AccessStatus = .unknown
     @Published var microphoneIsReceivingAudio = false
     @Published var systemIsReceivingAudio = false
+    @Published var isMicrophoneMuted = false
     @Published var microphones: [MicrophoneOption] = []
     @Published var selectedMicrophoneID = ""
 
@@ -158,6 +159,13 @@ final class AppState: ObservableObject {
         }
     }
 
+    func toggleMicrophoneMute() {
+        guard isRecording else { return }
+        isMicrophoneMuted.toggle()
+        audioRecorder?.setMicrophoneMuted(isMicrophoneMuted)
+        if isMicrophoneMuted { microphoneIsReceivingAudio = false }
+    }
+
     func startRecording() async {
         recordingStatus = .preparing
         errorMessage = nil
@@ -202,6 +210,8 @@ final class AppState: ObservableObject {
 
             startedAt = Date()
             elapsed = 0
+            isMicrophoneMuted = false
+            recorder.setMicrophoneMuted(false)
             microphoneIsReceivingAudio = false
             systemIsReceivingAudio = false
             selection = nil
@@ -213,6 +223,7 @@ final class AppState: ObservableObject {
             captureEngine = nil
             microphoneEngine = nil
             recordingStatus = .idle
+            isMicrophoneMuted = false
             refreshModelStatus()
             errorMessage = error.localizedDescription
         }
@@ -265,6 +276,7 @@ final class AppState: ObservableObject {
         captureEngine = nil
         microphoneEngine = nil
         startedAt = nil
+        isMicrophoneMuted = false
         recordingStatus = .idle
         processingMessage = ""
 
@@ -438,7 +450,8 @@ final class AppState: ObservableObject {
             Task { @MainActor in
                 guard let self, let startedAt = self.startedAt else { return }
                 self.elapsed = Date().timeIntervalSince(startedAt)
-                self.microphoneIsReceivingAudio = self.audioRecorder?.microphoneHasData ?? false
+                self.microphoneIsReceivingAudio = !self.isMicrophoneMuted
+                    && (self.audioRecorder?.microphoneHasData ?? false)
                 self.systemIsReceivingAudio = self.audioRecorder?.systemAudioHasData ?? false
             }
         }

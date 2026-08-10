@@ -411,6 +411,18 @@ private struct RecordingView: View {
                 Text(state.elapsedLabel)
                     .font(.system(size: 22, weight: .medium, design: .monospaced))
                     .foregroundStyle(Theme.ink)
+                Button {
+                    state.toggleMicrophoneMute()
+                } label: {
+                    Label(
+                        state.isMicrophoneMuted ? "Reativar meu microfone" : "Silenciar meu microfone",
+                        systemImage: state.isMicrophoneMuted ? "mic.fill" : "mic.slash.fill"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(state.isMicrophoneMuted ? Theme.green : Theme.ink)
+                .controlSize(.large)
+                .disabled(!state.isRecording)
                 Button("Encerrar") { state.toggleRecording() }
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.orange)
@@ -434,9 +446,13 @@ private struct RecordingView: View {
                     MiniWaveform()
                         .scaleEffect(2.2)
                         .frame(height: 60)
-                    Text("Capturando reunião e microfone")
+                    Text(state.isMicrophoneMuted ? "Seu microfone está silenciado" : "Capturando reunião e microfone")
                         .font(.system(size: 21, weight: .bold, design: .rounded))
-                    Text("O Whisper identifica Português, English e Deutsch automaticamente.\nA transcrição original aparece ao encerrar.")
+                    Text(
+                        state.isMicrophoneMuted
+                            ? "Sua voz não entrará na transcrição enquanto o mute estiver ativo.\nO áudio do sistema continua sendo capturado normalmente."
+                            : "O Whisper identifica Português, English e Deutsch automaticamente.\nA transcrição original aparece ao encerrar."
+                    )
                         .multilineTextAlignment(.center)
                         .foregroundStyle(Theme.muted)
                         .lineSpacing(4)
@@ -449,7 +465,8 @@ private struct RecordingView: View {
                         AudioSignalPill(
                             title: "Microfone",
                             icon: "mic.fill",
-                            active: state.microphoneIsReceivingAudio
+                            active: state.microphoneIsReceivingAudio,
+                            muted: state.isMicrophoneMuted
                         )
                         AudioSignalPill(
                             title: "Áudio do sistema",
@@ -495,17 +512,23 @@ private struct AudioSignalPill: View {
     let title: String
     let icon: String
     let active: Bool
+    var muted = false
 
     var body: some View {
-        Label(active ? "\(title) ativo" : "Aguardando \(title.lowercased())", systemImage: icon)
+        Label(
+            muted ? "\(title) silenciado" : active ? "\(title) ativo" : "Aguardando \(title.lowercased())",
+            systemImage: muted ? "mic.slash.fill" : icon
+        )
             .font(.caption.weight(.semibold))
-            .foregroundStyle(active ? Theme.green : Theme.muted)
+            .foregroundStyle(muted ? Theme.orange : active ? Theme.green : Theme.muted)
             .padding(.horizontal, 11)
             .padding(.vertical, 7)
             .background(Theme.card)
             .clipShape(Capsule())
             .overlay {
-                Capsule().stroke(active ? Theme.green.opacity(0.35) : Theme.line)
+                Capsule().stroke(
+                    muted ? Theme.orange.opacity(0.45) : active ? Theme.green.opacity(0.35) : Theme.line
+                )
             }
     }
 }

@@ -53,12 +53,29 @@ private struct SettingsView: View {
                     Text(language.name).tag(language.id)
                 }
             }
-            LabeledContent("Privacidade", value: "Somente processamento local")
+            Picker("Modelo padrão do resumo", selection: Binding(
+                get: { state.selectedSummaryProvider },
+                set: { state.selectSummaryProvider($0) }
+            )) {
+                ForEach(SummaryProvider.allCases) { provider in
+                    Text(provider.label).tag(provider)
+                }
+            }
+            LabeledContent(
+                "Claude Code",
+                value: state.claudeIsAvailable ? "Instalação local encontrada" : "Não encontrado"
+            )
+            LabeledContent(
+                "Privacidade",
+                value: state.selectedSummaryProvider == .local
+                    ? "Resumo processado somente neste Mac"
+                    : "A transcrição é enviada à Anthropic"
+            )
             LabeledContent("Áudio", value: "Nunca armazenado")
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 460, height: 300)
+        .frame(width: 500, height: 380)
     }
 
     private func accessLabel(_ status: AppState.AccessStatus) -> String {

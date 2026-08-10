@@ -23,6 +23,8 @@
 - Detects language changes dynamically without replacing the original transcript.
 - Shows on-demand translations in all three languages and validates the generated language.
 - Generates summaries, decisions, key dates, and action items with owners and due dates.
+- Lets you choose between the fully on-device Apple Intelligence model and the locally installed Claude Code CLI for each summary.
+- Can regenerate a summary with either provider without retranscribing the meeting or rebuilding its translations.
 - Lets you mark action items as completed and records their completion date.
 - Lets you correct the meeting title, summary, decisions, dates, original transcript, and translations directly in the meeting detail.
 - Supports inline editing and deletion of generated action items, including task, owner, and due date.
@@ -41,6 +43,7 @@ LocalMeet is designed to keep meeting content on your device:
 
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp) handles transcription and language detection locally.
 - Apple Foundation Models generates translations and meeting analysis on-device when available.
+- Claude is optional. When selected, LocalMeet invokes the user's existing local Claude Code installation and authentication in a tool-free, non-persistent session; the transcript is sent to Anthropic for processing.
 - Audio is removed after a successful transcription. If transcription fails, both tracks are preserved locally so you can retry without losing the meeting.
 - Transcripts are stored at `~/Library/Application Support/LocalMeet/meetings.json`.
 - Failed recordings are kept under `~/Library/Application Support/LocalMeet/RecoveryAudio/` until a retry succeeds.
@@ -63,6 +66,7 @@ The current build uses an ad hoc signature and is not notarized yet. If macOS bl
 | --- | --- |
 | Audio capture and transcription | macOS 15 or later |
 | Translation, summaries, and action items | macOS 26 with Apple Intelligence enabled |
+| Optional Claude summaries | Claude Code installed and authenticated locally |
 | Current DMG architecture | Apple Silicon |
 | Building from source | Xcode 16+, Swift 6, and Homebrew |
 
@@ -82,6 +86,12 @@ Microphone ────── AVFoundation ─────┘
                               on-device Apple Foundation Models
                          translation · summary · decisions · actions
 
+                               or, for summary generation only
+                                                  │
+                                                  ▼
+                             locally installed Claude Code CLI
+                              summary · decisions · dates · actions
+
                          each meeting remains visible in a persistent
                           local queue with per-stage progress tracking
 ```
@@ -89,6 +99,8 @@ Microphone ────── AVFoundation ─────┘
 Both sources are transcribed independently and merged only after transcription using their timestamps. This keeps **You** and **Meeting** segments separate, including during overlapping speech.
 
 During a recording, use **Mute my microphone** or press `Shift-Command-M` for private side conversations. The system-audio track is unaffected, and unmuting resumes your microphone on the same timeline.
+
+For summaries, choose **Local LLM** to keep the transcript entirely on-device or **Claude** to use the Claude Code installation already authenticated on your Mac. You can switch providers and select **Summarize again** at any time.
 
 ## Development
 

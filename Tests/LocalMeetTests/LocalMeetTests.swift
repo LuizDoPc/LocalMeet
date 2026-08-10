@@ -95,12 +95,13 @@ import Testing
     let firstID = UUID()
     let secondID = UUID()
     let requests = [
-        ProcessingRequest(meetingID: firstID, kind: .fullPipeline),
+        ProcessingRequest(meetingID: firstID, kind: .fullPipeline, summaryProvider: .claude),
         ProcessingRequest(meetingID: secondID, kind: .translationOnly)
     ]
     let store = ProcessingQueueStore(baseDirectory: directory)
     try store.save(requests)
     #expect(store.load() == requests)
+    #expect(store.load().first?.summaryProvider == .claude)
 
     let emptyMeeting = Meeting(
         id: firstID,
@@ -137,6 +138,61 @@ import Testing
     #expect(translatedProgress.transcription == 1)
     #expect(translatedProgress.summary == 1)
     #expect(translatedProgress.translation == 1)
+}
+
+@Test func claudeLocalInstallationProducesStructuredMeetingAnalysis() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("localmeet-claude-test-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let executable = directory.appendingPathComponent("claude")
+    let response = #"{"is_error":false,"structured_output":{"summary":"Resumo pelo Claude","decisions":["Aprovado"],"actionItems":[{"task":"Enviar ata","owner":"Ana","dueDate":"sexta-feira"}],"keyDates":[{"date":"sexta-feira","context":"Envio da ata"}]}}"#
+    let script = """
+        #!/bin/sh
+        cat >/dev/null
+        printf '%s\\n' '\(response)'
+        """
+    try script.write(to: executable, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+    let engine = ClaudeCLIEngine(executableURL: executable, workingDirectory: directory)
+
+    let analysis = try await engine.analyze(segments: [
+        TranscriptSegment(source: .meeting, offset: 0, text: "Ana enviará a ata na sexta-feira.")
+    ])
+
+    #expect(analysis.summary == "Resumo pelo Claude")
+    #expect(analysis.summaryProvider == .claude)
+    #expect(analysis.decisions == ["Aprovado"])
+    #expect(analysis.actionItems.first?.task == "Enviar ata")
+    #expect(analysis.actionItems.first?.owner == "Ana")
+    #expect(analysis.keyDates.first?.date == "sexta-feira")
+}
+
+@Test func installedClaudeGeneratesMeetingAnalysis() async throws {
+    guard ProcessInfo.processInfo.environment["LOCALMEET_CLAUDE_TEST"] == "1",
+          let executable = ClaudeCLIEngine.locateExecutable() else { return }
+    let workingDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("localmeet-installed-claude-test-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: workingDirectory) }
+    let analysis = try await ClaudeCLIEngine(
+        executableURL: executable,
+        workingDirectory: workingDirectory
+    ).analyze(segments: [
+        TranscriptSegment(
+            source: .meeting,
+            offset: 0,
+            text: "A equipe aprovou o lançamento para 12 de setembro."
+        ),
+        TranscriptSegment(
+            source: .microphone,
+            offset: 5,
+            text: "Ana enviará as notas da versão até sexta-feira."
+        )
+    ])
+    #expect(analysis.summaryProvider == .claude)
+    #expect(!analysis.summary.isEmpty)
+    #expect(!analysis.decisions.isEmpty)
+    #expect(analysis.actionItems.contains { $0.owner?.localizedCaseInsensitiveContains("Ana") == true })
 }
 
 @Test func localMultilingualIntelligence() async throws {

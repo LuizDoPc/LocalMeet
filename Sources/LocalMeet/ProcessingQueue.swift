@@ -3,12 +3,24 @@ import Foundation
 enum ProcessingRequestKind: String, Codable, Sendable {
     case fullPipeline
     case summaryAndTranslation
+    case summaryOnly
     case translationOnly
 }
 
 struct ProcessingRequest: Codable, Equatable, Sendable {
     let meetingID: UUID
     let kind: ProcessingRequestKind
+    let summaryProvider: SummaryProvider?
+
+    init(
+        meetingID: UUID,
+        kind: ProcessingRequestKind,
+        summaryProvider: SummaryProvider? = nil
+    ) {
+        self.meetingID = meetingID
+        self.kind = kind
+        self.summaryProvider = summaryProvider
+    }
 }
 
 enum MeetingProcessingStage: Equatable, Sendable {

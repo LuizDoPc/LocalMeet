@@ -7,6 +7,7 @@ LOCALMEET — INSTALAÇÃO
 5. Você pode iniciar outras reuniões enquanto o app processa as anteriores. A fila e o progresso de cada etapa aparecem dentro do app.
 6. Durante a gravação, use Silenciar meu microfone ou ⇧⌘M. Somente sua voz é silenciada; o áudio do sistema continua normalmente.
 7. No detalhe da reunião, clique no título ou nos ícones de lápis para corrigir textos. Action points, decisões e datas também podem ser editados ou apagados.
+8. Para cada resumo, escolha LLM local ou Claude. O modo Claude usa o Claude Code já instalado e autenticado neste Mac e envia a transcrição à Anthropic.
 
 REQUISITOS
 

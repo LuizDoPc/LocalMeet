@@ -55,12 +55,14 @@ final class AppState: ObservableObject {
     @Published var isMicrophoneMuted = false
     @Published var microphones: [MicrophoneOption] = []
     @Published var selectedMicrophoneID = ""
+    @Published var selectedSummaryProvider: SummaryProvider = .local
 
     private let store: MeetingStore
     private let whisper: WhisperEngine
     private let recoveryAudio: RecoveryAudioStore
     private let queueStore: ProcessingQueueStore
     private let intelligence = LocalIntelligenceEngine()
+    private let claude: ClaudeCLIEngine
     private var captureEngine: MeetingCaptureEngine?
     private var microphoneEngine: MicrophoneCaptureEngine?
     private var audioRecorder: TemporaryAudioRecorder?
@@ -77,10 +79,17 @@ final class AppState: ObservableObject {
         self.whisper = whisper
         self.recoveryAudio = recoveryAudio ?? RecoveryAudioStore(baseDirectory: whisper.applicationSupport)
         queueStore = ProcessingQueueStore(baseDirectory: whisper.applicationSupport)
+        claude = ClaudeCLIEngine(
+            workingDirectory: whisper.applicationSupport.appendingPathComponent("ClaudeRuns", isDirectory: true)
+        )
         meetings = store.load().sorted { $0.startedAt > $1.startedAt }
         let meetingIDs = Set(meetings.map(\.id))
         processingQueue = queueStore.load().filter { meetingIDs.contains($0.meetingID) }
         selection = meetings.first?.id
+        if let savedProvider = UserDefaults.standard.string(forKey: "summaryProvider"),
+           let provider = SummaryProvider(rawValue: savedProvider) {
+            selectedSummaryProvider = provider == .claude && !claude.isAvailable ? .local : provider
+        }
         restoreQueueProgress()
         try? queueStore.save(processingQueue)
         refreshMicrophones()
@@ -93,6 +102,7 @@ final class AppState: ObservableObject {
 
     var isRecording: Bool { recordingStatus == .recording }
     var isBusy: Bool { recordingStatus != .idle }
+    var claudeIsAvailable: Bool { claude.isAvailable }
 
     var selectedMeeting: Meeting? {
         meetings.first { $0.id == selection }
@@ -267,7 +277,11 @@ final class AppState: ObservableObject {
             processingMessage = "Preservando o áudio antes da transcrição…"
             _ = try recoveryAudio.preserve(files: files, meetingID: meetingID)
             audioRecorder?.removeTemporaryFiles()
-            enqueue(meetingID: meetingID, kind: .fullPipeline)
+            enqueue(
+                meetingID: meetingID,
+                kind: .fullPipeline,
+                summaryProvider: selectedSummaryProvider
+            )
         } catch {
             markTranscriptionFailure(meetingID: meetingID, error: error)
         }
@@ -300,6 +314,10 @@ final class AppState: ObservableObject {
         processingQueue.contains { $0.meetingID == meetingID }
     }
 
+    func summaryProvider(for meetingID: UUID) -> SummaryProvider? {
+        processingQueue.first(where: { $0.meetingID == meetingID })?.summaryProvider
+    }
+
     func revealRecoveryAudio(meetingID: UUID) {
         let files = Array(recoveryAudio.files(for: meetingID).values)
         guard !files.isEmpty else { return }
@@ -309,7 +327,29 @@ final class AppState: ObservableObject {
     func analyze(meetingID: UUID) async {
         guard let meeting = meetings.first(where: { $0.id == meetingID }),
               !meeting.segments.isEmpty else { return }
-        enqueue(meetingID: meetingID, kind: .summaryAndTranslation)
+        if selectedSummaryProvider == .claude, !claudeIsAvailable {
+            errorMessage = ClaudeCLIError.notInstalled.localizedDescription
+            return
+        }
+        enqueue(
+            meetingID: meetingID,
+            kind: .summaryAndTranslation,
+            summaryProvider: selectedSummaryProvider
+        )
+    }
+
+    func regenerateSummary(meetingID: UUID) async {
+        guard let meeting = meetings.first(where: { $0.id == meetingID }),
+              !meeting.segments.isEmpty else { return }
+        if selectedSummaryProvider == .claude, !claudeIsAvailable {
+            errorMessage = ClaudeCLIError.notInstalled.localizedDescription
+            return
+        }
+        enqueue(
+            meetingID: meetingID,
+            kind: .summaryOnly,
+            summaryProvider: selectedSummaryProvider
+        )
     }
 
     func translateMeeting(meetingID: UUID) async {
@@ -481,6 +521,15 @@ final class AppState: ObservableObject {
         UserDefaults.standard.set(id, forKey: "selectedMicrophoneID")
     }
 
+    func selectSummaryProvider(_ provider: SummaryProvider) {
+        if provider == .claude, !claudeIsAvailable {
+            errorMessage = ClaudeCLIError.notInstalled.localizedDescription
+            return
+        }
+        selectedSummaryProvider = provider
+        UserDefaults.standard.set(provider.rawValue, forKey: "summaryProvider")
+    }
+
     private func refreshModelStatus() {
         if whisper.executableURL == nil {
             modelStatus = .unavailable("whisper.cpp não instalado")
@@ -547,11 +596,21 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func enqueue(meetingID: UUID, kind: ProcessingRequestKind) {
+    private func enqueue(
+        meetingID: UUID,
+        kind: ProcessingRequestKind,
+        summaryProvider: SummaryProvider? = nil
+    ) {
         guard meetings.contains(where: { $0.id == meetingID }) else { return }
         guard !processingQueue.contains(where: { $0.meetingID == meetingID }) else { return }
 
-        processingQueue.append(ProcessingRequest(meetingID: meetingID, kind: kind))
+        processingQueue.append(
+            ProcessingRequest(
+                meetingID: meetingID,
+                kind: kind,
+                summaryProvider: summaryProvider
+            )
+        )
         refreshQueuePositions()
         persistQueue()
         startQueueWorker()
@@ -588,19 +647,28 @@ final class AppState: ObservableObject {
                 if meetings.first(where: { $0.id == request.meetingID })?.segments.isEmpty != false {
                     try await performTranscription(meetingID: request.meetingID)
                 }
-                try await performSummary(meetingID: request.meetingID)
+                try await performSummary(
+                    meetingID: request.meetingID,
+                    provider: request.summaryProvider ?? .local
+                )
                 try await performTranslation(meetingID: request.meetingID)
             case .summaryAndTranslation:
-                try await performSummary(meetingID: request.meetingID)
+                try await performSummary(
+                    meetingID: request.meetingID,
+                    provider: request.summaryProvider ?? .local
+                )
                 try await performTranslation(meetingID: request.meetingID)
+            case .summaryOnly:
+                try await performSummary(
+                    meetingID: request.meetingID,
+                    provider: request.summaryProvider ?? .local
+                )
             case .translationOnly:
                 try await performTranslation(meetingID: request.meetingID)
             }
-            processingProgress[request.meetingID] = MeetingProcessingProgress(
-                stage: .completed,
-                transcription: 1,
-                summary: meetings.first(where: { $0.id == request.meetingID })?.analysis == nil ? 0 : 1,
-                translation: 1
+            processingProgress[request.meetingID] = progressSnapshot(
+                meetingID: request.meetingID,
+                stage: .completed
             )
         } catch {
             refreshModelStatus()
@@ -664,16 +732,28 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func performSummary(meetingID: UUID) async throws {
+    private func performSummary(meetingID: UUID, provider: SummaryProvider) async throws {
         guard let index = meetings.firstIndex(where: { $0.id == meetingID }),
               !meetings[index].segments.isEmpty else { throw WhisperError.noSpeechRecognized }
         analysisMeetingID = meetingID
         updateStage(meetingID: meetingID, stage: .summarizing)
 
-        var refreshedAnalysis = try await intelligence.analyze(
-            segments: meetings[index].segments
-        ) { [weak self] fraction in
-            await self?.setSummaryProgress(meetingID: meetingID, fraction: fraction)
+        var refreshedAnalysis: MeetingAnalysis
+        switch provider {
+        case .local:
+            refreshedAnalysis = try await intelligence.analyze(
+                segments: meetings[index].segments
+            ) { [weak self] fraction in
+                await self?.setSummaryProgress(meetingID: meetingID, fraction: fraction)
+            }
+            refreshedAnalysis.summaryProvider = .local
+        case .claude:
+            refreshedAnalysis = try await claude.analyze(
+                segments: meetings[index].segments
+            ) { [weak self] fraction in
+                await self?.setSummaryProgress(meetingID: meetingID, fraction: fraction)
+            }
+            refreshedAnalysis.summaryProvider = .claude
         }
         guard let currentIndex = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
         let previousActions = meetings[currentIndex].analysis?.actionItems ?? []

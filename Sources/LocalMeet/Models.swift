@@ -1,5 +1,26 @@
 import Foundation
 
+enum SummaryProvider: String, Codable, CaseIterable, Identifiable, Sendable {
+    case local
+    case claude
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .local: "LLM local"
+        case .claude: "Claude"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .local: "Apple Intelligence · tudo permanece neste Mac"
+        case .claude: "Claude Code instalado · envia a transcrição para a Anthropic"
+        }
+    }
+}
+
 enum AudioSource: String, Codable, CaseIterable, Sendable {
     case meeting
     case microphone
@@ -121,6 +142,7 @@ struct MeetingAnalysis: Codable, Hashable, Sendable {
     var decisions: [String]
     var actionItems: [ActionItem]
     var keyDates: [KeyDate]
+    var summaryProvider: SummaryProvider? = nil
 }
 
 struct CaptureDiagnostics: Codable, Hashable, Sendable {

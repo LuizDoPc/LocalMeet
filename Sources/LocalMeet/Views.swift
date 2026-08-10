@@ -461,6 +461,27 @@ private struct RecordingView: View {
                         languageChip("EN")
                         languageChip("DE")
                     }
+                    VStack(spacing: 7) {
+                        HStack(spacing: 10) {
+                            Text("RESUMO COM")
+                                .font(.caption2.weight(.bold))
+                                .tracking(1)
+                                .foregroundStyle(Theme.muted)
+                            Picker("Modelo do resumo", selection: Binding(
+                                get: { state.selectedSummaryProvider },
+                                set: { state.selectSummaryProvider($0) }
+                            )) {
+                                ForEach(SummaryProvider.allCases) { provider in
+                                    Text(provider.label).tag(provider)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 230)
+                        }
+                        Text(state.selectedSummaryProvider.detail)
+                            .font(.caption)
+                            .foregroundStyle(state.selectedSummaryProvider == .local ? Theme.green : Theme.orange)
+                    }
                     HStack(spacing: 10) {
                         AudioSignalPill(
                             title: "Microfone",
@@ -787,7 +808,7 @@ private struct AnalysisView: View {
             if state.analysisMeetingID == meeting.id {
                 VStack(spacing: 16) {
                     ProgressView().controlSize(.large)
-                    Text("O modelo local está traduzindo e organizando a reunião…")
+                    Text("\((state.summaryProvider(for: meeting.id) ?? state.selectedSummaryProvider).label) está organizando a reunião…")
                         .foregroundStyle(Theme.muted)
                     Text("Resumo · decisões · ações · responsáveis · datas")
                         .font(.caption)
@@ -797,6 +818,13 @@ private struct AnalysisView: View {
             } else if let analysis = meeting.analysis {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
+                        SummaryProviderControls(
+                            currentProvider: analysis.summaryProvider,
+                            actionTitle: "Resumir novamente",
+                            disabled: state.isQueuedOrProcessing(meeting.id)
+                        ) {
+                            Task { await state.regenerateSummary(meetingID: meeting.id) }
+                        }
                         analysisCard("RESUMO", icon: "text.alignleft") {
                             EditableTextBlock(
                                 text: analysis.summary,
@@ -868,16 +896,22 @@ private struct AnalysisView: View {
                     .frame(maxWidth: .infinity)
                 }
             } else {
-                ContentUnavailableView {
-                    Label("Resumo ainda não gerado", systemImage: "sparkles")
-                } description: {
-                    Text("O Apple Intelligence analisa a transcrição sem enviar dados para a nuvem.")
-                } actions: {
-                    Button("Gerar resumo e traduções") {
+                VStack(spacing: 18) {
+                    ContentUnavailableView {
+                        Label("Resumo ainda não gerado", systemImage: "sparkles")
+                    } description: {
+                        Text("Escolha o modelo que deve analisar esta transcrição.")
+                    }
+                    SummaryProviderControls(
+                        currentProvider: nil,
+                        actionTitle: "Gerar resumo e traduções",
+                        disabled: state.isQueuedOrProcessing(meeting.id)
+                    ) {
                         Task { await state.analyze(meetingID: meeting.id) }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(state.isQueuedOrProcessing(meeting.id))
+                    .frame(maxWidth: 620)
+                    .padding(.horizontal, 30)
+                    .padding(.bottom, 30)
                 }
             }
         }
@@ -902,6 +936,60 @@ private struct AnalysisView: View {
         .background(Theme.card)
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay { RoundedRectangle(cornerRadius: 14).stroke(Theme.line) }
+    }
+}
+
+private struct SummaryProviderControls: View {
+    @EnvironmentObject private var state: AppState
+    let currentProvider: SummaryProvider?
+    let actionTitle: String
+    let disabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("MODELO DO RESUMO")
+                        .font(.caption2.weight(.bold))
+                        .tracking(1)
+                        .foregroundStyle(Theme.muted)
+                    if let currentProvider {
+                        Text("Resumo atual: \(currentProvider.label)")
+                            .font(.caption)
+                            .foregroundStyle(Theme.muted)
+                    }
+                }
+                Spacer()
+                Picker("Modelo do resumo", selection: Binding(
+                    get: { state.selectedSummaryProvider },
+                    set: { state.selectSummaryProvider($0) }
+                )) {
+                    ForEach(SummaryProvider.allCases) { provider in
+                        Text(provider.label).tag(provider)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 230)
+                Button(actionTitle, systemImage: "arrow.clockwise", action: action)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(disabled || (state.selectedSummaryProvider == .claude && !state.claudeIsAvailable))
+            }
+            HStack(spacing: 7) {
+                Image(systemName: state.selectedSummaryProvider == .local ? "lock.fill" : "cloud.fill")
+                Text(state.selectedSummaryProvider.detail)
+                if !state.claudeIsAvailable {
+                    Text("· Claude Code não encontrado")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(state.selectedSummaryProvider == .local ? Theme.green : Theme.orange)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(Theme.line) }
     }
 }
 

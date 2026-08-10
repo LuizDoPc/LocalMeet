@@ -567,11 +567,36 @@ private struct MeetingDetailView: View {
             .overlay(alignment: .bottom) { Divider() }
 
             if meeting.segments.isEmpty {
-                ContentUnavailableView(
-                    "Nenhuma fala reconhecida",
-                    systemImage: "text.bubble",
-                    description: Text("Confira se o idioma offline está instalado e se havia áudio na chamada.")
-                )
+                ContentUnavailableView {
+                    Label(
+                        state.transcriptionMeetingID == meeting.id
+                            ? "Transcrevendo áudio preservado…"
+                            : "Transcrição não concluída",
+                        systemImage: state.transcriptionMeetingID == meeting.id
+                            ? "waveform.badge.magnifyingglass"
+                            : "externaldrive.badge.exclamationmark"
+                    )
+                } description: {
+                    if state.transcriptionMeetingID == meeting.id {
+                        Text("As trilhas do microfone e do áudio do sistema continuam protegidas no Mac.")
+                    } else if state.hasRecoveryAudio(for: meeting.id) {
+                        Text(meeting.transcriptionError ?? "O áudio está preservado e pode ser transcrito novamente.")
+                    } else {
+                        Text(meeting.transcriptionError ?? "Não há áudio de recuperação disponível para esta gravação.")
+                    }
+                } actions: {
+                    if state.hasRecoveryAudio(for: meeting.id) {
+                        Button("Tentar transcrever novamente") {
+                            Task { await state.retryTranscription(meetingID: meeting.id) }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(state.transcriptionMeetingID != nil)
+                        Button("Mostrar áudio de recuperação") {
+                            state.revealRecoveryAudio(meetingID: meeting.id)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
             } else if selectedSection == 0 {
                 AnalysisView(meeting: meeting)
             } else {

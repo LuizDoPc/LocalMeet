@@ -8,6 +8,7 @@ enum WhisperError: LocalizedError {
     case conversionFailed(String)
     case transcriptionFailed(String)
     case invalidOutput
+    case noSpeechRecognized
 
     var errorDescription: String? {
         switch self {
@@ -21,6 +22,8 @@ enum WhisperError: LocalizedError {
             "A transcrição local falhou: \(details)"
         case .invalidOutput:
             "O motor local retornou uma transcrição inválida."
+        case .noSpeechRecognized:
+            "O áudio foi preservado, mas nenhuma fala foi reconhecida. Você pode tentar transcrever novamente."
         }
     }
 }

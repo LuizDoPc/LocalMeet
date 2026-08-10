@@ -13,4 +13,4 @@ REQUISITOS
 
 PRIVACIDADE
 
-O áudio fica somente em uma pasta temporária durante a reunião e é apagado depois da transcrição. O texto fica em ~/Library/Application Support/LocalMeet.
+O áudio é apagado depois de uma transcrição bem-sucedida. Se a transcrição falhar, as duas trilhas ficam preservadas localmente para uma nova tentativa. O texto fica em ~/Library/Application Support/LocalMeet.

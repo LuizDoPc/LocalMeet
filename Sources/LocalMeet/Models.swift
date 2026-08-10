@@ -139,6 +139,8 @@ struct Meeting: Identifiable, Codable, Hashable, Sendable {
     var analysis: MeetingAnalysis?
     var tags: [String]
     var captureDiagnostics: CaptureDiagnostics?
+    var transcriptionError: String?
+    var transcriptionAttemptCount: Int
 
     init(
         id: UUID = UUID(),
@@ -149,7 +151,9 @@ struct Meeting: Identifiable, Codable, Hashable, Sendable {
         segments: [TranscriptSegment],
         analysis: MeetingAnalysis? = nil,
         tags: [String] = [],
-        captureDiagnostics: CaptureDiagnostics? = nil
+        captureDiagnostics: CaptureDiagnostics? = nil,
+        transcriptionError: String? = nil,
+        transcriptionAttemptCount: Int = 0
     ) {
         self.id = id
         self.title = title
@@ -160,6 +164,8 @@ struct Meeting: Identifiable, Codable, Hashable, Sendable {
         self.analysis = analysis
         self.tags = tags
         self.captureDiagnostics = captureDiagnostics
+        self.transcriptionError = transcriptionError
+        self.transcriptionAttemptCount = transcriptionAttemptCount
     }
 
     var durationLabel: String {
@@ -222,6 +228,7 @@ struct Meeting: Identifiable, Codable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, startedAt, duration, localeIdentifier, segments, analysis, tags, captureDiagnostics
+        case transcriptionError, transcriptionAttemptCount
     }
 
     init(from decoder: Decoder) throws {
@@ -235,6 +242,8 @@ struct Meeting: Identifiable, Codable, Hashable, Sendable {
         analysis = try values.decodeIfPresent(MeetingAnalysis.self, forKey: .analysis)
         tags = try values.decodeIfPresent([String].self, forKey: .tags) ?? []
         captureDiagnostics = try values.decodeIfPresent(CaptureDiagnostics.self, forKey: .captureDiagnostics)
+        transcriptionError = try values.decodeIfPresent(String.self, forKey: .transcriptionError)
+        transcriptionAttemptCount = try values.decodeIfPresent(Int.self, forKey: .transcriptionAttemptCount) ?? 0
     }
 }
 

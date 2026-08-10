@@ -26,6 +26,7 @@
 - Organizes meetings with tags, search, and filters.
 - Exports meetings as Markdown.
 - Reports whether microphone and system-audio signals were detected during capture.
+- Checkpoints each meeting and preserves recovery audio before transcription begins.
 
 ## Privacy
 
@@ -33,8 +34,9 @@ LocalMeet is designed to keep meeting content on your device:
 
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp) handles transcription and language detection locally.
 - Apple Foundation Models generates translations and meeting analysis on-device when available.
-- Audio files exist only during processing and are removed afterward.
+- Audio is removed after a successful transcription. If transcription fails, both tracks are preserved locally so you can retry without losing the meeting.
 - Transcripts are stored at `~/Library/Application Support/LocalMeet/meetings.json`.
+- Failed recordings are kept under `~/Library/Application Support/LocalMeet/RecoveryAudio/` until a retry succeeds.
 - No account, proprietary server, or API key is required.
 
 > On first launch, the app downloads the multilingual whisper.cpp `small` model, which is approximately 466 MB. Transcription works offline after that.

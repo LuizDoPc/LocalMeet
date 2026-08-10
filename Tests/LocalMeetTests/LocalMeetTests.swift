@@ -38,7 +38,9 @@ import Testing
             ],
             keyDates: []
         ),
-        tags: ["Cliente", "Produto"]
+        tags: ["Cliente", "Produto"],
+        transcriptionError: "Retry available",
+        transcriptionAttemptCount: 2
     )
     let store = MeetingStore(baseDirectory: directory)
     try store.save([meeting])
@@ -50,7 +52,39 @@ import Testing
     #expect(loaded.tags == ["Cliente", "Produto"])
     #expect(loaded.analysis?.actionItems.first?.isCompleted == true)
     #expect(loaded.analysis?.actionItems.first?.completedAt != nil)
+    #expect(loaded.transcriptionError == "Retry available")
+    #expect(loaded.transcriptionAttemptCount == 2)
     #expect(loaded.markdown.contains("Transcrito localmente"))
+}
+
+@Test func recoveryAudioSurvivesUntilExplicitCleanup() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("localmeet-recovery-test-\(UUID().uuidString)", isDirectory: true)
+    let captureDirectory = directory.appendingPathComponent("capture", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: captureDirectory, withIntermediateDirectories: true)
+
+    let meetingAudio = captureDirectory.appendingPathComponent("meeting.caf")
+    let microphoneAudio = captureDirectory.appendingPathComponent("microphone.caf")
+    try Data(repeating: 0x31, count: 4_096).write(to: meetingAudio)
+    try Data(repeating: 0x42, count: 2_048).write(to: microphoneAudio)
+
+    let meetingID = UUID()
+    let store = RecoveryAudioStore(baseDirectory: directory)
+    let preserved = try store.preserve(
+        files: [.meeting: meetingAudio, .microphone: microphoneAudio],
+        meetingID: meetingID
+    )
+
+    try FileManager.default.removeItem(at: captureDirectory)
+    #expect(preserved.count == 2)
+    #expect(store.files(for: meetingID).keys.contains(.meeting))
+    #expect(store.files(for: meetingID).keys.contains(.microphone))
+    #expect(FileManager.default.fileExists(atPath: preserved[.meeting]!.path))
+    #expect(FileManager.default.fileExists(atPath: preserved[.microphone]!.path))
+
+    try store.remove(meetingID: meetingID)
+    #expect(store.files(for: meetingID).isEmpty)
 }
 
 @Test func localMultilingualIntelligence() async throws {

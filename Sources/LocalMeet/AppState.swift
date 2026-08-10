@@ -43,6 +43,7 @@ final class AppState: ObservableObject {
     @Published var elapsed: TimeInterval = 0
     @Published var processingMessage = ""
     @Published var analysisMeetingID: UUID?
+    @Published var transcriptionMeetingID: UUID?
     @Published var errorMessage: String?
     @Published var microphoneAccess: AccessStatus = .unknown
     @Published var systemAudioAccess: AccessStatus = .unknown
@@ -53,6 +54,7 @@ final class AppState: ObservableObject {
 
     private let store: MeetingStore
     private let whisper: WhisperEngine
+    private let recoveryAudio: RecoveryAudioStore
     private let intelligence = LocalIntelligenceEngine()
     private var captureEngine: MeetingCaptureEngine?
     private var microphoneEngine: MicrophoneCaptureEngine?
@@ -60,9 +62,14 @@ final class AppState: ObservableObject {
     private var timer: Timer?
     private var startedAt: Date?
 
-    init(store: MeetingStore = MeetingStore(), whisper: WhisperEngine = WhisperEngine()) {
+    init(
+        store: MeetingStore = MeetingStore(),
+        whisper: WhisperEngine = WhisperEngine(),
+        recoveryAudio: RecoveryAudioStore? = nil
+    ) {
         self.store = store
         self.whisper = whisper
+        self.recoveryAudio = recoveryAudio ?? RecoveryAudioStore(baseDirectory: whisper.applicationSupport)
         meetings = store.load().sorted { $0.startedAt > $1.startedAt }
         selection = meetings.first?.id
         refreshMicrophones()
@@ -217,45 +224,33 @@ final class AppState: ObservableObject {
         let start = startedAt ?? Date()
         let meetingID = UUID()
 
+        let meeting = Meeting(
+            id: meetingID,
+            title: defaultTitle(for: start),
+            startedAt: start,
+            duration: elapsed,
+            localeIdentifier: "pt+en+de",
+            segments: [],
+            captureDiagnostics: CaptureDiagnostics(
+                microphoneSignalDetected: microphoneSignal,
+                systemSignalDetected: systemSignal,
+                microphoneName: selectedMicrophoneName
+            )
+        )
+        meetings.insert(meeting, at: 0)
+        selection = meeting.id
+        persistMeetings()
+
         do {
+            processingMessage = "Preservando o áudio antes da transcrição…"
+            let preservedFiles = try recoveryAudio.preserve(files: files, meetingID: meetingID)
+            audioRecorder?.removeTemporaryFiles()
             processingMessage = "Detectando idiomas e transcrevendo no Mac…"
-            let segments = try await whisper.transcribe(files: files)
-            let meeting = Meeting(
-                id: meetingID,
-                title: defaultTitle(for: start),
-                startedAt: start,
-                duration: elapsed,
-                localeIdentifier: "pt+en+de",
-                segments: segments,
-                captureDiagnostics: CaptureDiagnostics(
-                    microphoneSignalDetected: microphoneSignal,
-                    systemSignalDetected: systemSignal,
-                    microphoneName: selectedMicrophoneName
-                )
-            )
-            meetings.insert(meeting, at: 0)
-            try? store.save(meetings)
-            selection = meeting.id
+            await transcribePreservedMeeting(meetingID: meetingID, files: preservedFiles)
         } catch {
-            errorMessage = error.localizedDescription
-            let meeting = Meeting(
-                id: meetingID,
-                title: defaultTitle(for: start),
-                startedAt: start,
-                duration: elapsed,
-                localeIdentifier: "pt+en+de",
-                segments: [],
-                captureDiagnostics: CaptureDiagnostics(
-                    microphoneSignalDetected: microphoneSignal,
-                    systemSignalDetected: systemSignal,
-                    microphoneName: selectedMicrophoneName
-                )
-            )
-            meetings.insert(meeting, at: 0)
-            selection = meeting.id
+            markTranscriptionFailure(meetingID: meetingID, error: error)
         }
 
-        audioRecorder?.removeTemporaryFiles()
         audioRecorder = nil
         captureEngine = nil
         microphoneEngine = nil
@@ -263,9 +258,27 @@ final class AppState: ObservableObject {
         recordingStatus = .idle
         processingMessage = ""
 
-        if meetings.first(where: { $0.id == meetingID })?.segments.isEmpty == false {
-            Task { await analyze(meetingID: meetingID) }
+    }
+
+    func retryTranscription(meetingID: UUID) async {
+        guard transcriptionMeetingID == nil else { return }
+        let files = recoveryAudio.files(for: meetingID)
+        guard !files.isEmpty else {
+            let error = RecoveryAudioError.noAudio
+            markTranscriptionFailure(meetingID: meetingID, error: error)
+            return
         }
+        await transcribePreservedMeeting(meetingID: meetingID, files: files)
+    }
+
+    func hasRecoveryAudio(for meetingID: UUID) -> Bool {
+        !recoveryAudio.files(for: meetingID).isEmpty
+    }
+
+    func revealRecoveryAudio(meetingID: UUID) {
+        let files = Array(recoveryAudio.files(for: meetingID).values)
+        guard !files.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(files)
     }
 
     func analyze(meetingID: UUID) async {
@@ -302,6 +315,7 @@ final class AppState: ObservableObject {
         meetings.removeAll { $0.id == meeting.id }
         if selection == meeting.id { selection = meetings.first?.id }
         try? store.save(meetings)
+        try? recoveryAudio.remove(meetingID: meeting.id)
     }
 
     func rename(_ meeting: Meeting, to title: String) {
@@ -429,6 +443,56 @@ final class AppState: ObservableObject {
                 self.microphoneIsReceivingAudio = self.audioRecorder?.microphoneHasData ?? false
                 self.systemIsReceivingAudio = self.audioRecorder?.systemAudioHasData ?? false
             }
+        }
+    }
+
+    private func transcribePreservedMeeting(
+        meetingID: UUID,
+        files: [AudioSource: URL]
+    ) async {
+        guard transcriptionMeetingID == nil,
+              let index = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
+        transcriptionMeetingID = meetingID
+        meetings[index].transcriptionAttemptCount += 1
+        meetings[index].transcriptionError = nil
+        persistMeetings()
+
+        do {
+            let segments = try await whisper.transcribe(files: files)
+            guard !segments.isEmpty else { throw WhisperError.noSpeechRecognized }
+            guard let currentIndex = meetings.firstIndex(where: { $0.id == meetingID }) else {
+                transcriptionMeetingID = nil
+                return
+            }
+            meetings[currentIndex].segments = segments
+            meetings[currentIndex].transcriptionError = nil
+            try store.save(meetings)
+            do {
+                try recoveryAudio.remove(meetingID: meetingID)
+            } catch {
+                errorMessage = "A transcrição foi salva, mas o áudio temporário não pôde ser removido: \(error.localizedDescription)"
+            }
+            transcriptionMeetingID = nil
+            Task { await analyze(meetingID: meetingID) }
+        } catch {
+            markTranscriptionFailure(meetingID: meetingID, error: error)
+            transcriptionMeetingID = nil
+        }
+    }
+
+    private func markTranscriptionFailure(meetingID: UUID, error: Error) {
+        guard let index = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
+        let message = error.localizedDescription
+        meetings[index].transcriptionError = message
+        persistMeetings()
+        errorMessage = message
+    }
+
+    private func persistMeetings() {
+        do {
+            try store.save(meetings)
+        } catch {
+            errorMessage = "Não foi possível salvar a reunião: \(error.localizedDescription)"
         }
     }
 

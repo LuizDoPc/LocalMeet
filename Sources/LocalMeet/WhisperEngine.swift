@@ -94,21 +94,17 @@ struct WhisperEngine: Sendable {
             throw WhisperError.modelDownloadFailed
         }
 
-        return try await withThrowingTaskGroup(of: [TranscriptSegment].self) { group in
-            for (source, fileURL) in files {
-                group.addTask {
-                    try await transcribe(
-                        file: fileURL,
-                        source: source,
-                        executableURL: executableURL,
-                        progress: progress
-                    )
-                }
-            }
-            var all: [TranscriptSegment] = []
-            for try await segments in group { all += segments }
-            return all.sorted { $0.offset < $1.offset }
+        var all: [TranscriptSegment] = []
+        for source in AudioSource.allCases {
+            guard let fileURL = files[source] else { continue }
+            all += try await transcribe(
+                file: fileURL,
+                source: source,
+                executableURL: executableURL,
+                progress: progress
+            )
         }
+        return all.sorted { $0.offset < $1.offset }
     }
 
     private func transcribe(
@@ -141,44 +137,92 @@ struct WhisperEngine: Sendable {
                 let outputBase = directory.appendingPathComponent(
                     "\(source.rawValue)-transcript-\(chunkIndex)"
                 )
-                let result = try runProcess(
-                    executable: executableURL,
-                    arguments: [
-                        "-m", modelURL.path,
-                        "-f", chunkURL.path,
-                        "-l", "auto",
-                        "-ojf",
-                        "-of", outputBase.path,
-                        "-np",
-                        "-sns",
-                        "--prompt", "Português, English, Deutsch. Preserve the spoken language exactly."
-                    ]
-                )
-                guard result.status == 0 else {
-                    throw WhisperError.transcriptionFailed(result.output)
-                }
-
                 let jsonURL = outputBase.appendingPathExtension("json")
-                guard let data = try? Data(contentsOf: jsonURL),
-                      let document = try? JSONDecoder().decode(WhisperDocument.self, from: data) else {
-                    throw WhisperError.invalidOutput
-                }
-                let language = document.result.language.lowercased()
-                segments += document.transcription.compactMap { entry in
-                    let text = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !text.isEmpty, !text.hasPrefix("[") else { return nil }
-                    return TranscriptSegment(
-                        source: source,
-                        offset: TimeInterval(chunkIndex * 20) + TimeInterval(entry.offsets.from) / 1_000,
-                        text: text,
-                        detectedLanguage: language
+                let document: WhisperDocument
+                if let cached = decodeWhisperDocument(at: jsonURL) {
+                    document = cached
+                } else {
+                    document = try transcribeChunk(
+                        chunkURL,
+                        outputBase: outputBase,
+                        executableURL: executableURL
                     )
                 }
+                segments += transcriptSegments(from: document, source: source, chunkIndex: chunkIndex)
                 let fraction = 0.10 + 0.90 * Double(chunkIndex + 1) / Double(max(1, chunks.count))
                 await progress?(source, fraction)
             }
             return segments
         }.value
+    }
+
+    private func transcribeChunk(
+        _ chunkURL: URL,
+        outputBase: URL,
+        executableURL: URL
+    ) throws -> WhisperDocument {
+        let jsonURL = outputBase.appendingPathExtension("json")
+        var lastOutput = ""
+        var lastStatus: Int32 = 0
+        for _ in 0..<2 {
+            let result = try runProcess(
+                executable: executableURL,
+                arguments: [
+                    "-m", modelURL.path,
+                    "-f", chunkURL.path,
+                    "-l", "auto",
+                    "-ojf",
+                    "-of", outputBase.path,
+                    "-np",
+                    "-sns",
+                    "--prompt", "Português, English, Deutsch. Preserve the spoken language exactly."
+                ]
+            )
+            lastOutput = result.output
+            lastStatus = result.status
+            if result.status == 0,
+               let document = decodeWhisperDocument(at: jsonURL) {
+                return document
+            }
+        }
+        if lastStatus != 0 {
+            throw WhisperError.transcriptionFailed(lastOutput)
+        }
+        throw WhisperError.invalidOutput
+    }
+
+    private func decodeWhisperDocument(at url: URL) -> WhisperDocument? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        if let document = try? JSONDecoder().decode(WhisperDocument.self, from: data) {
+            return document
+        }
+        // whisper.cpp can occasionally emit a malformed UTF-8 byte for silence/noise.
+        // Replacing that byte keeps the checkpoint resumable; non-speech artifacts are
+        // discarded by transcriptSegments below.
+        let repairedData = Data(String(decoding: data, as: UTF8.self).utf8)
+        return try? JSONDecoder().decode(WhisperDocument.self, from: repairedData)
+    }
+
+    private func transcriptSegments(
+        from document: WhisperDocument,
+        source: AudioSource,
+        chunkIndex: Int
+    ) -> [TranscriptSegment] {
+        let language = document.result.language.lowercased()
+        return document.transcription.compactMap { entry in
+            let text = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty,
+                  !text.hasPrefix("["),
+                  text.range(of: #"[A-Za-zÀ-ÖØ-öø-ÿ]"#, options: .regularExpression) != nil else {
+                return nil
+            }
+            return TranscriptSegment(
+                source: source,
+                offset: TimeInterval(chunkIndex * 20) + TimeInterval(entry.offsets.from) / 1_000,
+                text: text,
+                detectedLanguage: language
+            )
+        }
     }
 
     private func makeAudioChunks(

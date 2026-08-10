@@ -303,7 +303,11 @@ final class AppState: ObservableObject {
             markTranscriptionFailure(meetingID: meetingID, error: error)
             return
         }
-        enqueue(meetingID: meetingID, kind: .fullPipeline)
+        enqueue(
+            meetingID: meetingID,
+            kind: .fullPipeline,
+            summaryProvider: selectedSummaryProvider
+        )
     }
 
     func hasRecoveryAudio(for meetingID: UUID) -> Bool {

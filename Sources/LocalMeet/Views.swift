@@ -702,6 +702,28 @@ private struct MeetingDetailView: View {
                     }
                 } actions: {
                     if state.hasRecoveryAudio(for: meeting.id) {
+                        VStack(spacing: 7) {
+                            Text("DEPOIS DE TRANSCREVER, RESUMIR COM")
+                                .font(.caption2.weight(.bold))
+                                .tracking(1)
+                                .foregroundStyle(Theme.muted)
+                            Picker("Modelo do resumo", selection: Binding(
+                                get: { state.selectedSummaryProvider },
+                                set: { state.selectSummaryProvider($0) }
+                            )) {
+                                ForEach(SummaryProvider.allCases) { provider in
+                                    Text(provider.label).tag(provider)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 270)
+                            Text(state.selectedSummaryProvider.detail)
+                                .font(.caption)
+                                .foregroundStyle(
+                                    state.selectedSummaryProvider == .local ? Theme.green : Theme.orange
+                                )
+                        }
+                        .padding(.bottom, 6)
                         Button("Tentar transcrever novamente") {
                             Task { await state.retryTranscription(meetingID: meeting.id) }
                         }

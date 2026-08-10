@@ -541,23 +541,44 @@ private struct MeetingDetailView: View {
     @State private var selectedSection = 0
     @State private var showingNewTag = false
     @State private var newTag = ""
+    @FocusState private var titleFieldFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 7) {
                     if editingTitle {
-                        TextField("Nome da reunião", text: $draftTitle)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                            .onSubmit { saveTitle() }
-                    } else {
-                        Text(meeting.title)
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                            .onTapGesture(count: 2) {
-                                draftTitle = meeting.title
-                                editingTitle = true
+                        HStack(spacing: 8) {
+                            TextField("Nome da reunião", text: $draftTitle)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 28, weight: .bold, design: .rounded))
+                                .focused($titleFieldFocused)
+                                .onSubmit { saveTitle() }
+                            Button("Salvar", systemImage: "checkmark") { saveTitle() }
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(Theme.green)
+                            Button("Cancelar", systemImage: "xmark") {
+                                editingTitle = false
+                                titleFieldFocused = false
                             }
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(Theme.muted)
+                        }
+                    } else {
+                        HStack(spacing: 7) {
+                            Text(meeting.title)
+                                .font(.system(size: 28, weight: .bold, design: .rounded))
+                            Image(systemName: "pencil")
+                                .font(.caption)
+                                .foregroundStyle(Theme.muted)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            beginEditingTitle()
+                        }
+                        .help("Clique para editar o nome da reunião")
                     }
                     Text("\(meeting.startedAt.formatted(date: .long, time: .shortened))  ·  \(meeting.durationLabel)")
                         .font(.subheadline)
@@ -713,7 +734,7 @@ private struct MeetingDetailView: View {
                 .buttonStyle(.borderless)
                 .disabled(state.isQueuedOrProcessing(meeting.id))
                 Spacer()
-                Text("O original nunca é alterado")
+                Text("Original e tradução podem ser corrigidos")
                     .font(.caption)
                     .foregroundStyle(Theme.muted)
             }
@@ -723,7 +744,12 @@ private struct MeetingDetailView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(meeting.segments) { segment in
-                        TranscriptBubble(segment: segment, translationTarget: state.translationTarget)
+                        TranscriptBubble(
+                            meetingID: meeting.id,
+                            segment: segment,
+                            translationTarget: state.translationTarget,
+                            editingDisabled: state.isQueuedOrProcessing(meeting.id)
+                        )
                     }
                 }
                 .padding(30)
@@ -736,6 +762,13 @@ private struct MeetingDetailView: View {
     private func saveTitle() {
         state.rename(meeting, to: draftTitle)
         editingTitle = false
+        titleFieldFocused = false
+    }
+
+    private func beginEditingTitle() {
+        draftTitle = meeting.title
+        editingTitle = true
+        DispatchQueue.main.async { titleFieldFocused = true }
     }
 
     private func captureStatus(_ detected: Bool, label: String, icon: String) -> some View {
@@ -765,12 +798,21 @@ private struct AnalysisView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
                         analysisCard("RESUMO", icon: "text.alignleft") {
-                            Text(analysis.summary).lineSpacing(4)
+                            EditableTextBlock(
+                                text: analysis.summary,
+                                accessibilityLabel: "Editar resumo"
+                            ) { updated in
+                                state.updateSummary(meetingID: meeting.id, text: updated)
+                            }
                         }
                         if !analysis.decisions.isEmpty {
                             analysisCard("DECISÕES", icon: "checkmark.seal") {
-                                ForEach(analysis.decisions, id: \.self) { decision in
-                                    Label(decision, systemImage: "checkmark")
+                                ForEach(Array(analysis.decisions.enumerated()), id: \.offset) { index, decision in
+                                    EditableDecisionRow(
+                                        decision: decision,
+                                        onSave: { state.updateDecision(meetingID: meeting.id, index: index, text: $0) },
+                                        onDelete: { state.deleteDecision(meetingID: meeting.id, index: index) }
+                                    )
                                 }
                             }
                         }
@@ -779,45 +821,44 @@ private struct AnalysisView: View {
                                 Text("Nenhuma ação explícita identificada.").foregroundStyle(Theme.muted)
                             } else {
                                 ForEach(analysis.actionItems) { item in
-                                    HStack(alignment: .top, spacing: 12) {
-                                        Button {
+                                    EditableActionPointRow(
+                                        item: item,
+                                        onToggle: {
                                             state.toggleAction(meetingID: meeting.id, actionID: item.id)
-                                        } label: {
-                                            Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
-                                                .font(.system(size: 18))
-                                                .foregroundStyle(item.isCompleted ? Theme.green : Theme.orange)
+                                        },
+                                        onSave: { task, owner, dueDate in
+                                            state.updateAction(
+                                                meetingID: meeting.id,
+                                                actionID: item.id,
+                                                task: task,
+                                                owner: owner,
+                                                dueDate: dueDate
+                                            )
+                                        },
+                                        onDelete: {
+                                            state.deleteAction(meetingID: meeting.id, actionID: item.id)
                                         }
-                                        .buttonStyle(.plain)
-                                        VStack(alignment: .leading, spacing: 5) {
-                                            Text(item.task)
-                                                .fontWeight(.semibold)
-                                                .strikethrough(item.isCompleted, color: Theme.muted)
-                                                .foregroundStyle(item.isCompleted ? Theme.muted : Theme.ink)
-                                            HStack(spacing: 10) {
-                                                Label(item.owner ?? "Responsável não definido", systemImage: "person")
-                                                Label(item.dueDate ?? "Sem prazo definido", systemImage: "calendar")
-                                                if let completedAt = item.completedAt {
-                                                    Label(
-                                                        "Concluído em \(completedAt.formatted(date: .abbreviated, time: .shortened))",
-                                                        systemImage: "checkmark"
-                                                    )
-                                                    .foregroundStyle(Theme.green)
-                                                }
-                                            }
-                                            .font(.caption)
-                                            .foregroundStyle(Theme.muted)
-                                        }
-                                    }
+                                    )
                                 }
                             }
                         }
                         if !analysis.keyDates.isEmpty {
                             analysisCard("DATAS IMPORTANTES", icon: "calendar.badge.clock") {
                                 ForEach(analysis.keyDates) { item in
-                                    HStack(alignment: .top) {
-                                        Text(item.date).fontWeight(.bold).frame(width: 120, alignment: .leading)
-                                        Text(item.context)
-                                    }
+                                    EditableKeyDateRow(
+                                        item: item,
+                                        onSave: { date, context in
+                                            state.updateKeyDate(
+                                                meetingID: meeting.id,
+                                                keyDateID: item.id,
+                                                date: date,
+                                                context: context
+                                            )
+                                        },
+                                        onDelete: {
+                                            state.deleteKeyDate(meetingID: meeting.id, keyDateID: item.id)
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -861,6 +902,247 @@ private struct AnalysisView: View {
         .background(Theme.card)
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay { RoundedRectangle(cornerRadius: 14).stroke(Theme.line) }
+    }
+}
+
+private struct EditableTextBlock: View {
+    let text: String
+    let accessibilityLabel: String
+    let onSave: (String) -> Void
+    @State private var editing = false
+    @State private var draft = ""
+
+    var body: some View {
+        if editing {
+            VStack(alignment: .leading, spacing: 9) {
+                TextEditor(text: $draft)
+                    .font(.system(size: 15))
+                    .scrollContentBackground(.hidden)
+                    .padding(7)
+                    .frame(minHeight: 110)
+                    .background(Color.white.opacity(0.55))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay { RoundedRectangle(cornerRadius: 8).stroke(Theme.orange.opacity(0.35)) }
+                editControls(save: save, cancel: { editing = false })
+            }
+        } else {
+            HStack(alignment: .top, spacing: 10) {
+                Text(text)
+                    .lineSpacing(4)
+                    .textSelection(.enabled)
+                Spacer(minLength: 8)
+                editButton { beginEditing() }
+                    .accessibilityLabel(accessibilityLabel)
+            }
+        }
+    }
+
+    private func beginEditing() {
+        draft = text
+        editing = true
+    }
+
+    private func save() {
+        let clean = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        onSave(clean)
+        editing = false
+    }
+}
+
+private struct EditableDecisionRow: View {
+    let decision: String
+    let onSave: (String) -> Void
+    let onDelete: () -> Void
+    @State private var editing = false
+    @State private var draft = ""
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "checkmark")
+                .foregroundStyle(Theme.green)
+                .padding(.top, editing ? 6 : 2)
+            if editing {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Decisão", text: $draft, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(2...5)
+                    editControls(save: save, cancel: { editing = false })
+                }
+            } else {
+                Text(decision)
+                    .textSelection(.enabled)
+                Spacer(minLength: 8)
+                editButton {
+                    draft = decision
+                    editing = true
+                }
+                deleteButton(action: onDelete)
+            }
+        }
+    }
+
+    private func save() {
+        let clean = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        onSave(clean)
+        editing = false
+    }
+}
+
+private struct EditableActionPointRow: View {
+    let item: ActionItem
+    let onToggle: () -> Void
+    let onSave: (String, String, String) -> Void
+    let onDelete: () -> Void
+    @State private var editing = false
+    @State private var draftTask = ""
+    @State private var draftOwner = ""
+    @State private var draftDueDate = ""
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Button(action: onToggle) {
+                Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18))
+                    .foregroundStyle(item.isCompleted ? Theme.green : Theme.orange)
+            }
+            .buttonStyle(.plain)
+            .help(item.isCompleted ? "Marcar como pendente" : "Marcar como concluído")
+
+            if editing {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Action point", text: $draftTask, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(2...5)
+                    HStack(spacing: 8) {
+                        TextField("Responsável", text: $draftOwner)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("Prazo", text: $draftDueDate)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    editControls(save: save, cancel: { editing = false })
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(item.task)
+                        .fontWeight(.semibold)
+                        .strikethrough(item.isCompleted, color: Theme.muted)
+                        .foregroundStyle(item.isCompleted ? Theme.muted : Theme.ink)
+                        .textSelection(.enabled)
+                    HStack(spacing: 10) {
+                        Label(item.owner ?? "Responsável não definido", systemImage: "person")
+                        Label(item.dueDate ?? "Sem prazo definido", systemImage: "calendar")
+                        if let completedAt = item.completedAt {
+                            Label(
+                                "Concluído em \(completedAt.formatted(date: .abbreviated, time: .shortened))",
+                                systemImage: "checkmark"
+                            )
+                            .foregroundStyle(Theme.green)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(Theme.muted)
+                }
+                Spacer(minLength: 8)
+                editButton(action: beginEditing)
+                deleteButton(action: onDelete)
+            }
+        }
+    }
+
+    private func beginEditing() {
+        draftTask = item.task
+        draftOwner = item.owner ?? ""
+        draftDueDate = item.dueDate ?? ""
+        editing = true
+    }
+
+    private func save() {
+        let clean = draftTask.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        onSave(clean, draftOwner, draftDueDate)
+        editing = false
+    }
+}
+
+private struct EditableKeyDateRow: View {
+    let item: KeyDate
+    let onSave: (String, String) -> Void
+    let onDelete: () -> Void
+    @State private var editing = false
+    @State private var draftDate = ""
+    @State private var draftContext = ""
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            if editing {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        TextField("Data", text: $draftDate)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 160)
+                        TextField("Contexto", text: $draftContext, axis: .vertical)
+                            .textFieldStyle(.roundedBorder)
+                            .lineLimit(1...4)
+                    }
+                    editControls(save: save, cancel: { editing = false })
+                }
+            } else {
+                Text(item.date)
+                    .fontWeight(.bold)
+                    .frame(width: 120, alignment: .leading)
+                    .textSelection(.enabled)
+                Text(item.context)
+                    .textSelection(.enabled)
+                Spacer(minLength: 8)
+                editButton(action: beginEditing)
+                deleteButton(action: onDelete)
+            }
+        }
+    }
+
+    private func beginEditing() {
+        draftDate = item.date
+        draftContext = item.context
+        editing = true
+    }
+
+    private func save() {
+        let cleanDate = draftDate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanContext = draftContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanDate.isEmpty, !cleanContext.isEmpty else { return }
+        onSave(cleanDate, cleanContext)
+        editing = false
+    }
+}
+
+private func editButton(action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+        Image(systemName: "pencil")
+    }
+    .buttonStyle(.borderless)
+    .foregroundStyle(Theme.muted)
+    .help("Editar")
+}
+
+private func deleteButton(action: @escaping () -> Void) -> some View {
+    Button(role: .destructive, action: action) {
+        Image(systemName: "trash")
+    }
+    .buttonStyle(.borderless)
+    .foregroundStyle(Theme.orange)
+    .help("Apagar")
+}
+
+private func editControls(save: @escaping () -> Void, cancel: @escaping () -> Void) -> some View {
+    HStack(spacing: 8) {
+        Button("Salvar", systemImage: "checkmark", action: save)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        Button("Cancelar", action: cancel)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
     }
 }
 
@@ -935,8 +1217,14 @@ private struct PipelineProgressBar: View {
 }
 
 private struct TranscriptBubble: View {
+    @EnvironmentObject private var state: AppState
+    let meetingID: UUID
     let segment: TranscriptSegment
     var translationTarget: String? = nil
+    var editingDisabled = false
+    @State private var editing = false
+    @State private var draftOriginal = ""
+    @State private var draftTranslation = ""
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -950,26 +1238,60 @@ private struct TranscriptBubble: View {
                     Text(segment.source.label.uppercased())
                     Text(segment.languageLabel.uppercased())
                         .foregroundStyle(Theme.muted)
+                    Spacer()
+                    if !editing {
+                        editButton(action: beginEditing)
+                            .disabled(editingDisabled)
+                    }
                 }
                 .font(.caption2.weight(.bold))
                 .tracking(0.9)
                 .foregroundStyle(segment.source == .microphone ? Theme.orange : Theme.green)
-                Text(segment.text)
-                    .font(.system(size: 15))
-                    .foregroundStyle(Theme.ink)
-                    .textSelection(.enabled)
-                    .lineSpacing(4)
-                if let translationTarget,
-                   let translated = segment.translations[translationTarget],
-                   translated.localizedCaseInsensitiveCompare(segment.text) != .orderedSame {
-                    Divider().padding(.vertical, 3)
-                    HStack(alignment: .top, spacing: 7) {
-                        Image(systemName: "translate")
-                            .foregroundStyle(Theme.orange)
-                        Text(translated)
+                if editing {
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text("ORIGINAL")
+                            .font(.caption2.weight(.bold))
                             .foregroundStyle(Theme.muted)
-                            .textSelection(.enabled)
-                            .lineSpacing(4)
+                        TextEditor(text: $draftOriginal)
+                            .font(.system(size: 15))
+                            .scrollContentBackground(.hidden)
+                            .padding(6)
+                            .frame(minHeight: 70)
+                            .background(Color.white.opacity(0.55))
+                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                        if let translationTarget,
+                           segment.translations[translationTarget] != nil {
+                            Text("TRADUÇÃO · \(languageName(translationTarget).uppercased())")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(Theme.orange)
+                            TextEditor(text: $draftTranslation)
+                                .font(.system(size: 15))
+                                .scrollContentBackground(.hidden)
+                                .padding(6)
+                                .frame(minHeight: 70)
+                                .background(Color.white.opacity(0.55))
+                                .clipShape(RoundedRectangle(cornerRadius: 7))
+                        }
+                        editControls(save: save, cancel: { editing = false })
+                    }
+                } else {
+                    Text(segment.text)
+                        .font(.system(size: 15))
+                        .foregroundStyle(Theme.ink)
+                        .textSelection(.enabled)
+                        .lineSpacing(4)
+                    if let translationTarget,
+                       let translated = segment.translations[translationTarget],
+                       translated.localizedCaseInsensitiveCompare(segment.text) != .orderedSame {
+                        Divider().padding(.vertical, 3)
+                        HStack(alignment: .top, spacing: 7) {
+                            Image(systemName: "translate")
+                                .foregroundStyle(Theme.orange)
+                            Text(translated)
+                                .foregroundStyle(Theme.muted)
+                                .textSelection(.enabled)
+                                .lineSpacing(4)
+                        }
                     }
                 }
             }
@@ -979,6 +1301,29 @@ private struct TranscriptBubble: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay { RoundedRectangle(cornerRadius: 12).stroke(Theme.line) }
         }
+    }
+
+    private func beginEditing() {
+        draftOriginal = segment.text
+        if let translationTarget {
+            draftTranslation = segment.translations[translationTarget] ?? ""
+        }
+        editing = true
+    }
+
+    private func save() {
+        state.updateTranscriptSegment(
+            meetingID: meetingID,
+            segmentID: segment.id,
+            original: draftOriginal,
+            translationLanguage: translationTarget,
+            translation: translationTarget == nil ? nil : draftTranslation
+        )
+        editing = false
+    }
+
+    private func languageName(_ identifier: String) -> String {
+        LanguageOption.supported.first(where: { $0.id == identifier })?.name ?? identifier
     }
 }
 

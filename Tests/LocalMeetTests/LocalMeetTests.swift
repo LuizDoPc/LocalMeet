@@ -284,3 +284,81 @@ import Testing
     #expect(saved.analysis?.actionItems.first?.isCompleted == true)
     #expect(saved.analysis?.actionItems.first?.completedAt != nil)
 }
+
+@Test @MainActor func generatedContentEditsAndDeletesPersist() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("localmeet-editing-test-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = MeetingStore(baseDirectory: directory)
+    let keptAction = ActionItem(task: "Errado", owner: "Pessoa errada", dueDate: "amanhã")
+    let removedAction = ActionItem(task: "Remover")
+    let keptDate = KeyDate(date: "10/10", context: "Contexto errado")
+    let removedDate = KeyDate(date: "11/11", context: "Remover")
+    let segment = TranscriptSegment(
+        source: .meeting,
+        offset: 0,
+        text: "Texto com typoo",
+        detectedLanguage: "pt",
+        translations: ["en": "Text with typoo"]
+    )
+    let meeting = Meeting(
+        title: "Nome antigo",
+        startedAt: Date(),
+        duration: 60,
+        localeIdentifier: "pt+en+de",
+        segments: [segment],
+        analysis: MeetingAnalysis(
+            summary: "Resumo errado",
+            decisions: ["Decisão errada", "Remover decisão"],
+            actionItems: [keptAction, removedAction],
+            keyDates: [keptDate, removedDate]
+        )
+    )
+    try store.save([meeting])
+    let state = AppState(
+        store: store,
+        whisper: WhisperEngine(applicationSupport: directory),
+        recoveryAudio: RecoveryAudioStore(baseDirectory: directory)
+    )
+
+    state.rename(meeting, to: "Nome corrigido")
+    state.updateSummary(meetingID: meeting.id, text: "Resumo corrigido")
+    state.updateDecision(meetingID: meeting.id, index: 0, text: "Decisão corrigida")
+    state.deleteDecision(meetingID: meeting.id, index: 1)
+    state.updateAction(
+        meetingID: meeting.id,
+        actionID: keptAction.id,
+        task: "Enviar documento",
+        owner: "Ana",
+        dueDate: "sexta-feira"
+    )
+    state.deleteAction(meetingID: meeting.id, actionID: removedAction.id)
+    state.updateKeyDate(
+        meetingID: meeting.id,
+        keyDateID: keptDate.id,
+        date: "12/10",
+        context: "Lançamento"
+    )
+    state.deleteKeyDate(meetingID: meeting.id, keyDateID: removedDate.id)
+    state.updateTranscriptSegment(
+        meetingID: meeting.id,
+        segmentID: segment.id,
+        original: "Texto sem typo",
+        translationLanguage: "en",
+        translation: "Text without typo"
+    )
+
+    let saved = try #require(store.load().first)
+    #expect(saved.title == "Nome corrigido")
+    #expect(saved.analysis?.summary == "Resumo corrigido")
+    #expect(saved.analysis?.decisions == ["Decisão corrigida"])
+    #expect(saved.analysis?.actionItems.map(\.task) == ["Enviar documento"])
+    #expect(saved.analysis?.actionItems.first?.owner == "Ana")
+    #expect(saved.analysis?.actionItems.first?.dueDate == "sexta-feira")
+    #expect(saved.analysis?.keyDates.map(\.date) == ["12/10"])
+    #expect(saved.analysis?.keyDates.first?.context == "Lançamento")
+    #expect(saved.segments.first?.text == "Texto sem typo")
+    #expect(saved.segments.first?.translations["en"] == "Text without typo")
+    #expect(saved.markdown.contains("Resumo corrigido"))
+    #expect(saved.markdown.contains("Enviar documento"))
+}

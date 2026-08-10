@@ -24,6 +24,8 @@
 - Shows on-demand translations in all three languages and validates the generated language.
 - Generates summaries, decisions, key dates, and action items with owners and due dates.
 - Lets you mark action items as completed and records their completion date.
+- Lets you correct the meeting title, summary, decisions, dates, original transcript, and translations directly in the meeting detail.
+- Supports inline editing and deletion of generated action items, including task, owner, and due date.
 - Organizes meetings with tags, search, and filters.
 - Exports meetings as Markdown.
 - Reports whether microphone and system-audio signals were detected during capture.

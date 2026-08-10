@@ -347,6 +347,96 @@ final class AppState: ObservableObject {
         try? store.save(meetings)
     }
 
+    func updateSummary(meetingID: UUID, text: String) {
+        guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }),
+              meetings[meetingIndex].analysis != nil else { return }
+        meetings[meetingIndex].analysis?.summary = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        persistMeetings()
+    }
+
+    func updateDecision(meetingID: UUID, index: Int, text: String) {
+        guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }),
+              meetings[meetingIndex].analysis?.decisions.indices.contains(index) == true else { return }
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        meetings[meetingIndex].analysis?.decisions[index] = clean
+        persistMeetings()
+    }
+
+    func deleteDecision(meetingID: UUID, index: Int) {
+        guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }),
+              meetings[meetingIndex].analysis?.decisions.indices.contains(index) == true else { return }
+        meetings[meetingIndex].analysis?.decisions.remove(at: index)
+        persistMeetings()
+    }
+
+    func updateAction(
+        meetingID: UUID,
+        actionID: UUID,
+        task: String,
+        owner: String,
+        dueDate: String
+    ) {
+        guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }),
+              let actionIndex = meetings[meetingIndex].analysis?.actionItems.firstIndex(where: { $0.id == actionID }) else {
+            return
+        }
+        let cleanTask = task.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanTask.isEmpty else { return }
+        meetings[meetingIndex].analysis?.actionItems[actionIndex].task = cleanTask
+        meetings[meetingIndex].analysis?.actionItems[actionIndex].owner = optionalClean(owner)
+        meetings[meetingIndex].analysis?.actionItems[actionIndex].dueDate = optionalClean(dueDate)
+        persistMeetings()
+    }
+
+    func deleteAction(meetingID: UUID, actionID: UUID) {
+        guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
+        meetings[meetingIndex].analysis?.actionItems.removeAll { $0.id == actionID }
+        persistMeetings()
+    }
+
+    func updateKeyDate(meetingID: UUID, keyDateID: UUID, date: String, context: String) {
+        guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }),
+              let dateIndex = meetings[meetingIndex].analysis?.keyDates.firstIndex(where: { $0.id == keyDateID }) else {
+            return
+        }
+        let cleanDate = date.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanContext = context.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanDate.isEmpty, !cleanContext.isEmpty else { return }
+        meetings[meetingIndex].analysis?.keyDates[dateIndex].date = cleanDate
+        meetings[meetingIndex].analysis?.keyDates[dateIndex].context = cleanContext
+        persistMeetings()
+    }
+
+    func deleteKeyDate(meetingID: UUID, keyDateID: UUID) {
+        guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
+        meetings[meetingIndex].analysis?.keyDates.removeAll { $0.id == keyDateID }
+        persistMeetings()
+    }
+
+    func updateTranscriptSegment(
+        meetingID: UUID,
+        segmentID: UUID,
+        original: String,
+        translationLanguage: String?,
+        translation: String?
+    ) {
+        guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }),
+              let segmentIndex = meetings[meetingIndex].segments.firstIndex(where: { $0.id == segmentID }) else { return }
+        let cleanOriginal = original.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanOriginal.isEmpty else { return }
+        meetings[meetingIndex].segments[segmentIndex].text = cleanOriginal
+        if let translationLanguage, let translation {
+            let cleanTranslation = translation.trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleanTranslation.isEmpty {
+                meetings[meetingIndex].segments[segmentIndex].translations.removeValue(forKey: translationLanguage)
+            } else {
+                meetings[meetingIndex].segments[segmentIndex].translations[translationLanguage] = cleanTranslation
+            }
+        }
+        persistMeetings()
+    }
+
     func addTag(_ name: String, to meetingID: UUID) {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty,
@@ -690,6 +780,11 @@ final class AppState: ObservableObject {
 
     private func clamped(_ fraction: Double) -> Double {
         min(1, max(0, fraction))
+    }
+
+    private func optionalClean(_ value: String) -> String? {
+        let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? nil : clean
     }
 
     private func markTranscriptionFailure(meetingID: UUID, error: Error) {

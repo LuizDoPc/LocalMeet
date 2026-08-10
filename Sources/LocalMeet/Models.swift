@@ -16,7 +16,7 @@ struct TranscriptSegment: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     let source: AudioSource
     let offset: TimeInterval
-    let text: String
+    var text: String
     var detectedLanguage: String
     var translations: [String: String]
 

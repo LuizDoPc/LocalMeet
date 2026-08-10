@@ -6,6 +6,7 @@ LOCALMEET — INSTALAÇÃO
 4. O app baixa uma vez o modelo multilíngue de aproximadamente 466 MB. Depois, transcrição, traduções e resumos são processados localmente.
 5. Você pode iniciar outras reuniões enquanto o app processa as anteriores. A fila e o progresso de cada etapa aparecem dentro do app.
 6. Durante a gravação, use Silenciar meu microfone ou ⇧⌘M. Somente sua voz é silenciada; o áudio do sistema continua normalmente.
+7. No detalhe da reunião, clique no título ou nos ícones de lápis para corrigir textos. Action points, decisões e datas também podem ser editados ou apagados.
 
 REQUISITOS
 

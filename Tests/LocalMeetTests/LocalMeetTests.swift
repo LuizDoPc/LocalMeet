@@ -4,6 +4,13 @@ import NaturalLanguage
 import Testing
 @testable import LocalMeet
 
+private actor LiveChunkCollector {
+    private var values: [LiveAudioChunk] = []
+
+    func append(_ chunk: LiveAudioChunk) { values.append(chunk) }
+    func chunks() -> [LiveAudioChunk] { values }
+}
+
 @Test func meetingRoundTripAndMarkdownExport() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -269,8 +276,17 @@ import Testing
     guard FileManager.default.fileExists(atPath: sample.path) else { return }
     let output = FileManager.default.temporaryDirectory
         .appendingPathComponent("localmeet-capture-\(UUID().uuidString).caf")
+    let liveDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("localmeet-live-test-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: output) }
-    let mutedRecorder = try TemporaryAudioRecorder()
+    defer { try? FileManager.default.removeItem(at: liveDirectory) }
+    let collector = LiveChunkCollector()
+    let mutedRecorder = try TemporaryAudioRecorder(
+        liveTranscriptionDirectory: liveDirectory,
+        liveChunkDuration: 1
+    ) { chunk in
+        Task { await collector.append(chunk) }
+    }
     defer { mutedRecorder.removeTemporaryFiles() }
     mutedRecorder.setMicrophoneMuted(true)
 
@@ -296,6 +312,12 @@ import Testing
     let originalAudio = try AVAudioFile(forReading: output)
     let mutedAudio = try AVAudioFile(forReading: mutedURL)
     #expect(mutedAudio.length == originalAudio.length)
+    try await Task.sleep(for: .milliseconds(100))
+    let liveChunks = await collector.chunks()
+    #expect(liveChunks.count >= 2)
+    #expect(liveChunks.allSatisfy { $0.source == .microphone })
+    #expect(zip(liveChunks, liveChunks.dropFirst()).allSatisfy { $0.0.offset < $0.1.offset })
+    #expect(liveChunks.allSatisfy { FileManager.default.fileExists(atPath: $0.url.path) })
 }
 
 @Test func dynamicLanguageSwitching() async throws {

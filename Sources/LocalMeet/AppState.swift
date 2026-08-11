@@ -56,6 +56,7 @@ final class AppState: ObservableObject {
     @Published var microphones: [MicrophoneOption] = []
     @Published var selectedMicrophoneID = ""
     @Published var selectedSummaryProvider: SummaryProvider = .local
+    @Published private(set) var liveTranscriptSegments: [TranscriptSegment] = []
 
     private let store: MeetingStore
     private let whisper: WhisperEngine
@@ -69,6 +70,7 @@ final class AppState: ObservableObject {
     private var timer: Timer?
     private var startedAt: Date?
     private var queueWorker: Task<Void, Never>?
+    private var liveTranscriber: LiveTranscriptionEngine?
 
     init(
         store: MeetingStore = MeetingStore(),
@@ -184,6 +186,7 @@ final class AppState: ObservableObject {
     func startRecording() async {
         recordingStatus = .preparing
         errorMessage = nil
+        liveTranscriptSegments = []
 
         do {
             if !whisper.isReady {
@@ -193,7 +196,22 @@ final class AppState: ObservableObject {
                 modelStatus = .ready
             }
             try await requestPermissions()
-            let recorder = try TemporaryAudioRecorder()
+            let liveDirectory = whisper.applicationSupport
+                .appendingPathComponent("LiveTranscription", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let transcriber = LiveTranscriptionEngine(
+                whisper: whisper,
+                rootDirectory: liveDirectory
+            ) { [weak self] segments in
+                await self?.receiveLiveTranscript(segments)
+            }
+            liveTranscriber = transcriber
+            let recorder = try TemporaryAudioRecorder(
+                liveTranscriptionDirectory: liveDirectory,
+                liveChunkDuration: 12
+            ) { chunk in
+                Task { await transcriber.enqueue(chunk) }
+            }
             let engine = MeetingCaptureEngine()
             let microphone = MicrophoneCaptureEngine(
                 deviceID: selectedMicrophoneID.isEmpty ? nil : selectedMicrophoneID
@@ -233,6 +251,8 @@ final class AppState: ObservableObject {
             recordingStatus = .recording
             startTimer()
         } catch {
+            await liveTranscriber?.stop()
+            liveTranscriber = nil
             audioRecorder?.removeTemporaryFiles()
             audioRecorder = nil
             captureEngine = nil
@@ -256,6 +276,8 @@ final class AppState: ObservableObject {
         let microphoneSignal = audioRecorder?.microphoneHasData ?? false
         let systemSignal = audioRecorder?.systemAudioHasData ?? false
         let files = await audioRecorder?.finish() ?? [:]
+        await liveTranscriber?.stop()
+        liveTranscriber = nil
         microphoneIsReceivingAudio = microphoneSignal
         systemIsReceivingAudio = systemSignal
         let start = startedAt ?? Date()
@@ -298,7 +320,14 @@ final class AppState: ObservableObject {
         isMicrophoneMuted = false
         recordingStatus = .idle
         processingMessage = ""
+        liveTranscriptSegments = []
 
+    }
+
+    private func receiveLiveTranscript(_ segments: [TranscriptSegment]) {
+        guard isRecording else { return }
+        liveTranscriptSegments.append(contentsOf: segments)
+        liveTranscriptSegments.sort { $0.offset < $1.offset }
     }
 
     func retryTranscription(

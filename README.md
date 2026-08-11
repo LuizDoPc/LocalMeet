@@ -18,6 +18,7 @@
 ## Features
 
 - Captures **system audio and microphone separately**, even when people speak over each other.
+- Shows a scrollable near-real-time original-language transcript during recording, usually within 15–25 seconds, while keeping the final high-quality transcription pipeline independent.
 - Temporarily mutes only your microphone while system audio keeps recording; muted intervals are written as silence to preserve timeline alignment.
 - Lets you browse and edit previous meetings while recording, with persistent timer, microphone mute, and stop controls.
 - Transcribes meetings containing **Portuguese, English, and German** in the same conversation.
@@ -100,6 +101,8 @@ Microphone ────── AVFoundation ─────┘
 ```
 
 Both sources are transcribed independently and merged only after transcription using their timestamps. This keeps **You** and **Meeting** segments separate, including during overlapping speech.
+
+While recording, LocalMeet closes short auxiliary windows for each source and sends them through one serialized local whisper.cpp queue. The recording screen keeps the resulting original-language captions in a scrollable timeline with optional auto-follow. These disposable windows never replace or modify the protected source recordings; the full retryable pipeline produces the definitive transcript after recording stops.
 
 During a recording, use **Mute my microphone** or press `Shift-Command-M` for private side conversations. The system-audio track is unaffected, and unmuting resumes your microphone on the same timeline.
 

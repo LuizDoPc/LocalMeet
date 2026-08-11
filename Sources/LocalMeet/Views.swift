@@ -576,6 +576,8 @@ private struct RecordingView: View {
                     Text("Entrada selecionada: \(state.selectedMicrophoneName)")
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
+                    LiveTranscriptView()
+                        .frame(maxWidth: 780, maxHeight: 300)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -604,6 +606,83 @@ private struct RecordingView: View {
             .background(Theme.card)
             .clipShape(Capsule())
             .overlay { Capsule().stroke(Theme.line) }
+    }
+}
+
+private struct LiveTranscriptView: View {
+    @EnvironmentObject private var state: AppState
+    @State private var followsLatest = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "text.bubble.fill")
+                    .foregroundStyle(Theme.green)
+                Text("TRANSCRIÇÃO AO VIVO")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1)
+                    .foregroundStyle(Theme.ink)
+                Text("aprox. 15–25 s de atraso")
+                    .font(.caption)
+                    .foregroundStyle(Theme.muted)
+                Spacer()
+                Toggle("Seguir", isOn: $followsLatest)
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .font(.caption)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 42)
+            .background(Theme.card)
+            .overlay(alignment: .bottom) { Divider() }
+
+            if state.liveTranscriptSegments.isEmpty {
+                VStack(spacing: 9) {
+                    ProgressView().controlSize(.small)
+                    Text("O primeiro trecho aparece após a primeira janela de áudio.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.muted)
+                    Text("A gravação final continua independente e protegida.")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.muted.opacity(0.85))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(state.liveTranscriptSegments) { segment in
+                                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                    Text(segment.timestamp)
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(Theme.muted)
+                                        .frame(width: 42, alignment: .leading)
+                                    Text(segment.source.label)
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(segment.source == .microphone ? Theme.orange : Theme.green)
+                                        .frame(width: 62, alignment: .leading)
+                                    Text(segment.text)
+                                        .font(.system(size: 14))
+                                        .foregroundStyle(Theme.ink)
+                                        .textSelection(.enabled)
+                                }
+                                .id(segment.id)
+                            }
+                        }
+                        .padding(14)
+                    }
+                    .onChange(of: state.liveTranscriptSegments.count) {
+                        guard followsLatest, let lastID = state.liveTranscriptSegments.last?.id else { return }
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            proxy.scrollTo(lastID, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+        }
+        .background(Color.white.opacity(0.62))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(Theme.line) }
     }
 }
 

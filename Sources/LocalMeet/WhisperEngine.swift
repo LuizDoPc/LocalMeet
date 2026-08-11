@@ -142,7 +142,7 @@ struct WhisperEngine: Sendable {
                 if let cached = decodeWhisperDocument(at: jsonURL) {
                     document = cached
                 } else {
-                    document = try transcribeChunk(
+                    document = try await transcribeChunk(
                         chunkURL,
                         outputBase: outputBase,
                         executableURL: executableURL
@@ -160,12 +160,12 @@ struct WhisperEngine: Sendable {
         _ chunkURL: URL,
         outputBase: URL,
         executableURL: URL
-    ) throws -> WhisperDocument {
+    ) async throws -> WhisperDocument {
         let jsonURL = outputBase.appendingPathExtension("json")
         var lastOutput = ""
         var lastStatus: Int32 = 0
         for _ in 0..<2 {
-            let result = try runProcess(
+            let result = try await WhisperProcessGate.shared.run(
                 executable: executableURL,
                 arguments: [
                     "-m", modelURL.path,
@@ -282,6 +282,14 @@ struct WhisperEngine: Sendable {
 private struct ProcessResult {
     let status: Int32
     let output: String
+}
+
+private actor WhisperProcessGate {
+    static let shared = WhisperProcessGate()
+
+    func run(executable: URL, arguments: [String]) throws -> ProcessResult {
+        try runProcess(executable: executable, arguments: arguments)
+    }
 }
 
 private func runProcess(executable: URL, arguments: [String]) throws -> ProcessResult {

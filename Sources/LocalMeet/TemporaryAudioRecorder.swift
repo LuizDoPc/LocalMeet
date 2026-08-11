@@ -14,14 +14,39 @@ enum AudioRecordingError: LocalizedError {
     }
 }
 
+struct LiveAudioChunk: Sendable {
+    let source: AudioSource
+    let url: URL
+    let offset: TimeInterval
+}
+
 final class SampleBufferChannelWriter {
     let url: URL
     private var file: AVAudioFile?
     private var wroteAudio = false
     private(set) var receivedSignal = false
+    private let source: AudioSource?
+    private let liveDirectory: URL?
+    private let liveChunkDuration: TimeInterval
+    private let onLiveChunk: (@Sendable (LiveAudioChunk) -> Void)?
+    private var liveFile: AVAudioFile?
+    private var liveFileURL: URL?
+    private var liveFrames: AVAudioFramePosition = 0
+    private var liveOffset: TimeInterval = 0
+    private var liveChunkIndex = 0
 
-    init(url: URL) {
+    init(
+        url: URL,
+        source: AudioSource? = nil,
+        liveDirectory: URL? = nil,
+        liveChunkDuration: TimeInterval = 12,
+        onLiveChunk: (@Sendable (LiveAudioChunk) -> Void)? = nil
+    ) {
         self.url = url
+        self.source = source
+        self.liveDirectory = liveDirectory
+        self.liveChunkDuration = liveChunkDuration
+        self.onLiveChunk = onLiveChunk
     }
 
     func append(_ sampleBuffer: CMSampleBuffer, silenced: Bool = false) {
@@ -37,6 +62,7 @@ final class SampleBufferChannelWriter {
                 )
             }
             try file?.write(from: buffer)
+            try? appendToLiveChunk(buffer)
             wroteAudio = true
             if containsAudibleSignal(buffer) { receivedSignal = true }
         } catch {
@@ -46,7 +72,40 @@ final class SampleBufferChannelWriter {
 
     func finish() -> URL? {
         file = nil
+        liveFile = nil
         return wroteAudio ? url : nil
+    }
+
+    private func appendToLiveChunk(_ buffer: AVAudioPCMBuffer) throws {
+        guard let source, let liveDirectory, let onLiveChunk else { return }
+        if liveFile == nil {
+            let chunkDirectory = liveDirectory.appendingPathComponent(
+                "\(source.rawValue)-\(liveChunkIndex)",
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(at: chunkDirectory, withIntermediateDirectories: true)
+            let chunkURL = chunkDirectory.appendingPathComponent("\(source.rawValue).caf")
+            liveFile = try AVAudioFile(
+                forWriting: chunkURL,
+                settings: buffer.format.settings,
+                commonFormat: buffer.format.commonFormat,
+                interleaved: buffer.format.isInterleaved
+            )
+            liveFileURL = chunkURL
+            liveFrames = 0
+        }
+
+        try liveFile?.write(from: buffer)
+        liveFrames += AVAudioFramePosition(buffer.frameLength)
+        let duration = Double(liveFrames) / buffer.format.sampleRate
+        guard duration >= liveChunkDuration, let chunkURL = liveFileURL else { return }
+
+        liveFile = nil
+        liveFileURL = nil
+        onLiveChunk(LiveAudioChunk(source: source, url: chunkURL, offset: liveOffset))
+        liveOffset += duration
+        liveChunkIndex += 1
+        liveFrames = 0
     }
 
     private func pcmBuffer(from sampleBuffer: CMSampleBuffer) throws -> AVAudioPCMBuffer {
@@ -109,12 +168,28 @@ final class TemporaryAudioRecorder: @unchecked Sendable {
     private let microphoneWriter: SampleBufferChannelWriter
     private var microphoneMuted = false
 
-    init() throws {
+    init(
+        liveTranscriptionDirectory: URL? = nil,
+        liveChunkDuration: TimeInterval = 12,
+        onLiveChunk: (@Sendable (LiveAudioChunk) -> Void)? = nil
+    ) throws {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("LocalMeet-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        systemWriter = SampleBufferChannelWriter(url: directory.appendingPathComponent("meeting.caf"))
-        microphoneWriter = SampleBufferChannelWriter(url: directory.appendingPathComponent("microphone.caf"))
+        systemWriter = SampleBufferChannelWriter(
+            url: directory.appendingPathComponent("meeting.caf"),
+            source: .meeting,
+            liveDirectory: liveTranscriptionDirectory,
+            liveChunkDuration: liveChunkDuration,
+            onLiveChunk: onLiveChunk
+        )
+        microphoneWriter = SampleBufferChannelWriter(
+            url: directory.appendingPathComponent("microphone.caf"),
+            source: .microphone,
+            liveDirectory: liveTranscriptionDirectory,
+            liveChunkDuration: liveChunkDuration,
+            onLiveChunk: onLiveChunk
+        )
     }
 
     func append(_ sampleBuffer: CMSampleBuffer, source: AudioSource) {

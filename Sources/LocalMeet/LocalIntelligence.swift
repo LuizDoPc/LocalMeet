@@ -281,7 +281,7 @@ private struct AppleIntelligenceProcessor {
         progress: (@Sendable (Double) async -> Void)?
     ) async throws -> MeetingAnalysis {
         let transcriptLines = segments.map {
-            "[\($0.timestamp)] \($0.source.label) (\($0.detectedLanguage)): \($0.text)"
+            "[\($0.timestamp)] \($0.speakerLabel) (\($0.detectedLanguage)): \($0.text)"
         }
         let transcriptChunks = chunk(transcriptLines, characterLimit: analysisCharacterLimit)
         var partialAnalyses: [MeetingAnalysis] = []

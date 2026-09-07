@@ -22,6 +22,8 @@ struct RootView: View {
                 Theme.paper.ignoresSafeArea()
                 if let meeting = state.selectedMeeting {
                     MeetingDetailView(meeting: meeting)
+                } else if state.showingContacts {
+                    ContactsView()
                 } else if state.recordingStatus != .idle {
                     RecordingView()
                 } else {
@@ -139,6 +141,29 @@ private struct SidebarView: View {
 
             Divider().opacity(0.6)
 
+            Button {
+                state.showContacts()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "person.2.fill")
+                        .frame(width: 20)
+                    Text("Contatos")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Text("\(state.contacts.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(state.showingContacts ? .white.opacity(0.72) : Theme.muted)
+                }
+                .foregroundStyle(state.showingContacts ? .white : Theme.ink)
+                .padding(.horizontal, 13)
+                .frame(height: 38)
+                .background(state.showingContacts ? Theme.ink : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+
             HStack {
                 Text("REUNIÕES")
                     .font(.caption2.weight(.bold))
@@ -216,6 +241,202 @@ private struct SidebarView: View {
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct ContactsView: View {
+    @EnvironmentObject private var state: AppState
+    @State private var showingNewContact = false
+    @State private var newContactName = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Contatos")
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                    Text("Os nomes atribuídos aqui aparecem em todas as falas vinculadas.")
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.muted)
+                }
+                Spacer()
+                Button {
+                    showingNewContact = true
+                } label: {
+                    Label("Novo contato", systemImage: "person.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+            .padding(30)
+            .background(Theme.card)
+            .overlay(alignment: .bottom) { Divider() }
+
+            if state.contacts.isEmpty {
+                ContentUnavailableView {
+                    Label("Nenhum contato ainda", systemImage: "person.2")
+                } description: {
+                    Text("Crie um contato ou nomeie uma voz dentro de uma reunião.")
+                } actions: {
+                    Button("Criar primeiro contato") { showingNewContact = true }
+                        .buttonStyle(.borderedProminent)
+                }
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(state.contacts) { contact in
+                            ContactRow(contact: contact)
+                            Divider()
+                        }
+                    }
+                    .padding(.horizontal, 30)
+                    .padding(.vertical, 18)
+                    .frame(maxWidth: 820)
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .alert("Novo contato", isPresented: $showingNewContact) {
+            TextField("Nome", text: $newContactName)
+            Button("Cancelar", role: .cancel) { newContactName = "" }
+            Button("Criar") {
+                state.createContact(named: newContactName)
+                newContactName = ""
+            }
+        } message: {
+            Text("Depois você poderá associar este contato a qualquer voz identificada pelo WhisperX.")
+        }
+    }
+}
+
+private struct ContactRow: View {
+    @EnvironmentObject private var state: AppState
+    let contact: Contact
+    @State private var draftName = ""
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle().fill(Theme.green.opacity(0.12))
+                Text(String(contact.name.prefix(1)).uppercased())
+                    .font(.headline)
+                    .foregroundStyle(Theme.green)
+            }
+            .frame(width: 42, height: 42)
+            VStack(alignment: .leading, spacing: 4) {
+                TextField("Nome do contato", text: $draftName)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 15, weight: .semibold))
+                    .onSubmit { state.renameContact(contact.id, to: draftName) }
+                let appearances = state.meetings.filter { meeting in
+                    meeting.participants.contains { $0.contactID == contact.id }
+                }.count
+                Text(appearances == 1 ? "1 reunião" : "\(appearances) reuniões")
+                    .font(.caption)
+                    .foregroundStyle(Theme.muted)
+            }
+            Spacer()
+            Button("Salvar") { state.renameContact(contact.id, to: draftName) }
+                .buttonStyle(.borderless)
+                .disabled(draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftName == contact.name)
+            Button(role: .destructive) { state.deleteContact(contact.id) } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Apagar contato sem apagar reuniões")
+        }
+        .padding(.vertical, 13)
+        .onAppear { draftName = contact.name }
+        .onChange(of: contact.name) { draftName = contact.name }
+    }
+}
+
+private struct MeetingParticipantsView: View {
+    let meeting: Meeting
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Image(systemName: "person.wave.2")
+                    .foregroundStyle(Theme.green)
+                Text("PARTICIPANTES IDENTIFICADOS")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1)
+                Text("Nomeie uma vez para ver quem falou o quê")
+                    .font(.caption)
+                    .foregroundStyle(Theme.muted)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 9) {
+                    ForEach(meeting.participants) { participant in
+                        ParticipantEditor(meeting: meeting, participant: participant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ParticipantEditor: View {
+    @EnvironmentObject private var state: AppState
+    let meeting: Meeting
+    let participant: MeetingParticipant
+    @State private var draftName = ""
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(participant.speakerID == "LOCAL_USER" ? Theme.orange : Theme.green)
+                .frame(width: 8, height: 8)
+            TextField("Nome", text: $draftName)
+                .textFieldStyle(.plain)
+                .font(.caption.weight(.semibold))
+                .frame(minWidth: 80, maxWidth: 130)
+                .onSubmit(save)
+            Menu {
+                if !state.contacts.isEmpty {
+                    ForEach(state.contacts) { contact in
+                        Button(contact.name) {
+                            state.assignParticipant(
+                                meetingID: meeting.id,
+                                speakerID: participant.speakerID,
+                                contactID: contact.id
+                            )
+                        }
+                    }
+                    Divider()
+                }
+                Button("Remover nome") {
+                    state.assignParticipant(
+                        meetingID: meeting.id,
+                        speakerID: participant.speakerID,
+                        contactID: nil
+                    )
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .padding(.horizontal, 11)
+        .frame(height: 34)
+        .background(Color.white.opacity(0.72))
+        .clipShape(Capsule())
+        .overlay { Capsule().stroke(Theme.line) }
+        .onAppear { draftName = state.participantName(meeting: meeting, speakerID: participant.speakerID) }
+        .onChange(of: participant.contactID) {
+            draftName = state.participantName(meeting: meeting, speakerID: participant.speakerID)
+        }
+    }
+
+    private func save() {
+        if let contactID = participant.contactID {
+            state.renameContact(contactID, to: draftName)
+        } else {
+            state.nameParticipant(meetingID: meeting.id, speakerID: participant.speakerID, name: draftName)
+        }
     }
 }
 
@@ -304,6 +525,7 @@ private struct MeetingRow: View {
         switch stage {
         case .queued: "clock"
         case .transcribing: "waveform"
+        case .diarizing: "person.wave.2"
         case .summarizing: "sparkles"
         case .translating: "character.bubble"
         case .completed: "checkmark.circle.fill"
@@ -832,6 +1054,32 @@ private struct MeetingDetailView: View {
                     .padding(.vertical, 14)
                     .background(Theme.card.opacity(0.78))
                     .overlay(alignment: .bottom) { Divider() }
+            }
+
+            if !meeting.participants.isEmpty {
+                MeetingParticipantsView(meeting: meeting)
+                    .padding(.horizontal, 30)
+                    .padding(.vertical, 12)
+                    .background(Theme.card.opacity(0.78))
+                    .overlay(alignment: .bottom) { Divider() }
+            }
+            if let diarizationError = meeting.diarizationError {
+                HStack(spacing: 8) {
+                    Image(systemName: "person.crop.circle.badge.exclamationmark")
+                    Text(diarizationError).lineLimit(2)
+                    Spacer()
+                    if state.hasRecoveryAudio(for: meeting.id) {
+                        Button("Tentar novamente") {
+                            state.retrySpeakerIdentification(meetingID: meeting.id)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(state.isQueuedOrProcessing(meeting.id))
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(Theme.orange)
+                .padding(.horizontal, 30)
+                .padding(.vertical, 10)
             }
 
             if meeting.segments.isEmpty {
@@ -1458,6 +1706,7 @@ private struct MeetingPipelineProgressView: View {
             }
             HStack(spacing: 18) {
                 PipelineProgressBar(title: "Transcrição", value: progress.transcription)
+                PipelineProgressBar(title: "Participantes", value: progress.diarization)
                 PipelineProgressBar(title: "Resumo", value: progress.summary)
                 PipelineProgressBar(title: "Traduções", value: progress.translation)
             }
@@ -1474,6 +1723,7 @@ private struct MeetingPipelineProgressView: View {
         switch progress.stage {
         case .queued: "clock"
         case .transcribing: "waveform"
+        case .diarizing: "person.wave.2"
         case .summarizing: "sparkles"
         case .translating: "character.bubble"
         case .completed: "checkmark.circle.fill"
@@ -1528,7 +1778,7 @@ private struct TranscriptBubble: View {
                 .padding(.top, 3)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 7) {
-                    Text(segment.source.label.uppercased())
+                    Text(segment.speakerLabel.uppercased())
                     Text(segment.languageLabel.uppercased())
                         .foregroundStyle(Theme.muted)
                     Spacer()

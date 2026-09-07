@@ -18,6 +18,8 @@
 ## Features
 
 - Captures **system audio and microphone separately**, even when people speak over each other.
+- Identifies distinct speakers in the system-audio track with locally running **WhisperX**, and attributes every transcript segment to a participant.
+- Includes a persistent **Contacts** area; a detected voice can be named or linked to an existing contact directly from the meeting.
 - Shows a scrollable near-real-time original-language transcript during recording, usually within 15–25 seconds, while keeping the final high-quality transcription pipeline independent.
 - Temporarily mutes only your microphone while system audio keeps recording; muted intervals are written as silence to preserve timeline alignment.
 - Lets you browse and edit previous meetings while recording, with persistent timer, microphone mute, and stop controls.
@@ -46,12 +48,13 @@
 LocalMeet is designed to keep meeting content on your device:
 
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp) handles transcription and language detection locally.
+- [WhisperX](https://github.com/m-bain/whisperX) performs speaker diarization locally. Model files are fetched once and remain in the local Hugging Face cache.
 - Apple Foundation Models generates translations and meeting analysis on-device when available.
 - Claude is optional. When selected, LocalMeet invokes the user's existing local Claude Code installation and authentication in a tool-free, non-persistent session; the transcript is sent to Anthropic for processing.
-- Audio is removed after a successful transcription. If transcription fails, both tracks are preserved locally so you can retry without losing the meeting.
+- Audio is removed after successful transcription and speaker identification. If either step fails, both tracks are preserved locally so you can retry without losing the meeting.
 - Transcripts are stored at `~/Library/Application Support/LocalMeet/meetings.json`.
 - Failed recordings are kept under `~/Library/Application Support/LocalMeet/RecoveryAudio/` until a retry succeeds.
-- No account, proprietary server, or API key is required.
+- No proprietary LocalMeet server is required. Speaker diarization needs a free Hugging Face account only to accept the model terms and download its weights; inference remains local.
 
 > On first launch, the app downloads the multilingual whisper.cpp `small` model, which is approximately 466 MB. Transcription works offline after that.
 
@@ -61,6 +64,7 @@ LocalMeet is designed to keep meeting content on your device:
 2. Open it and drag **LocalMeet** into **Applications**.
 3. Allow **Microphone** and **Screen & System Audio Recording** when prompted by macOS.
 4. Select your input device on the welcome screen or in **Settings**.
+5. To identify individual speakers, install WhisperX (`uv tool install whisperx`), accept the pyannote model terms, and save a Hugging Face read token in **Settings**.
 
 The current build uses an ad hoc signature and is not notarized yet. If macOS blocks the first launch, right-click the app, choose **Open**, and confirm.
 
@@ -71,6 +75,7 @@ The current build uses an ad hoc signature and is not notarized yet. If macOS bl
 | Audio capture and transcription | macOS 15 or later |
 | Translation, summaries, and action items | macOS 26 with Apple Intelligence enabled |
 | Optional Claude summaries | Claude Code installed and authenticated locally |
+| Speaker identification | WhisperX, ffmpeg, and a Hugging Face read token for the first model download |
 | Current DMG architecture | Apple Silicon |
 | Building from source | Xcode 16+, Swift 6, and Homebrew |
 
@@ -113,8 +118,12 @@ For summaries, choose **Local LLM** to keep the transcript entirely on-device or
 Install the native dependencies:
 
 ```bash
-brew install whisper-cpp ggml libomp
+brew install whisper-cpp ggml libomp ffmpeg
+brew install uv
+uv tool install whisperx
 ```
+
+Accept the terms for `pyannote/speaker-diarization-community-1`, create a read token in Hugging Face, and save it in **LocalMeet → Settings → WhisperX**. LocalMeet keeps that token in the macOS Keychain and only exposes it to the local WhisperX subprocess through its environment.
 
 Build the project and run its tests:
 
@@ -144,6 +153,7 @@ The build script embeds the whisper.cpp runtime in the `.app` and applies an ad 
 - ScreenCaptureKit
 - AVFoundation
 - whisper.cpp (`small`, multilingual)
+- WhisperX + pyannote (local speaker diarization)
 - Apple Foundation Models
 - Swift Testing
 

@@ -34,7 +34,11 @@ final class AppState: ObservableObject {
     }
 
     @Published var meetings: [Meeting]
-    @Published var selection: UUID?
+    @Published var contacts: [Contact]
+    @Published var selection: UUID? {
+        didSet { if selection != nil { showingContacts = false } }
+    }
+    @Published var showingContacts = false
     @Published var searchText = ""
     @Published var selectedTagFilter: String?
     @Published var translationTarget = "pt"
@@ -45,6 +49,7 @@ final class AppState: ObservableObject {
     @Published var analysisMeetingID: UUID?
     @Published var translationMeetingID: UUID?
     @Published var transcriptionMeetingID: UUID?
+    @Published var diarizationMeetingID: UUID?
     @Published private(set) var processingQueue: [ProcessingRequest] = []
     @Published private(set) var processingProgress: [UUID: MeetingProcessingProgress] = [:]
     @Published var errorMessage: String?
@@ -56,10 +61,13 @@ final class AppState: ObservableObject {
     @Published var microphones: [MicrophoneOption] = []
     @Published var selectedMicrophoneID = ""
     @Published var selectedSummaryProvider: SummaryProvider = .local
+    @Published var huggingFaceToken = ""
     @Published private(set) var liveTranscriptSegments: [TranscriptSegment] = []
 
     private let store: MeetingStore
+    private let contactStore: ContactStore
     private let whisper: WhisperEngine
+    private let whisperX: WhisperXEngine
     private let recoveryAudio: RecoveryAudioStore
     private let queueStore: ProcessingQueueStore
     private let intelligence = LocalIntelligenceEngine()
@@ -75,16 +83,22 @@ final class AppState: ObservableObject {
     init(
         store: MeetingStore = MeetingStore(),
         whisper: WhisperEngine = WhisperEngine(),
+        whisperX: WhisperXEngine = WhisperXEngine(),
+        contactStore: ContactStore? = nil,
         recoveryAudio: RecoveryAudioStore? = nil
     ) {
         self.store = store
+        self.contactStore = contactStore ?? ContactStore(baseDirectory: whisper.applicationSupport)
         self.whisper = whisper
+        self.whisperX = whisperX
         self.recoveryAudio = recoveryAudio ?? RecoveryAudioStore(baseDirectory: whisper.applicationSupport)
         queueStore = ProcessingQueueStore(baseDirectory: whisper.applicationSupport)
         claude = ClaudeCLIEngine(
             workingDirectory: whisper.applicationSupport.appendingPathComponent("ClaudeRuns", isDirectory: true)
         )
         meetings = store.load().sorted { $0.startedAt > $1.startedAt }
+        contacts = self.contactStore.load().sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        huggingFaceToken = KeychainStore.string(for: "hugging-face-token") ?? ""
         let meetingIDs = Set(meetings.map(\.id))
         processingQueue = queueStore.load().filter { meetingIDs.contains($0.meetingID) }
         selection = meetings.first?.id
@@ -105,6 +119,8 @@ final class AppState: ObservableObject {
     var isRecording: Bool { recordingStatus == .recording }
     var isBusy: Bool { recordingStatus != .idle }
     var claudeIsAvailable: Bool { claude.isAvailable }
+    var whisperXIsAvailable: Bool { whisperX.isAvailable }
+    var whisperXIsConfigured: Bool { whisperX.isAvailable && !huggingFaceToken.isEmpty }
 
     var selectedMeeting: Meeting? {
         meetings.first { $0.id == selection }
@@ -181,6 +197,93 @@ final class AppState: ObservableObject {
     func showActiveRecording() {
         guard recordingStatus != .idle else { return }
         selection = nil
+    }
+
+    func showContacts() {
+        selection = nil
+        showingContacts = true
+    }
+
+    @discardableResult
+    func createContact(named name: String) -> UUID? {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return nil }
+        if let existing = contacts.first(where: {
+            $0.name.localizedCaseInsensitiveCompare(clean) == .orderedSame
+        }) {
+            return existing.id
+        }
+        let contact = Contact(name: clean)
+        contacts.append(contact)
+        sortAndPersistContacts()
+        return contact.id
+    }
+
+    func renameContact(_ contactID: UUID, to name: String) {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, let index = contacts.firstIndex(where: { $0.id == contactID }) else { return }
+        contacts[index].name = clean
+        for meetingIndex in meetings.indices {
+            let speakerIDs = Set(meetings[meetingIndex].participants.filter { $0.contactID == contactID }.map(\.speakerID))
+            for segmentIndex in meetings[meetingIndex].segments.indices where
+                meetings[meetingIndex].segments[segmentIndex].speakerID.map(speakerIDs.contains) == true {
+                meetings[meetingIndex].segments[segmentIndex].speakerName = clean
+            }
+        }
+        sortAndPersistContacts()
+        persistMeetings()
+    }
+
+    func deleteContact(_ contactID: UUID) {
+        contacts.removeAll { $0.id == contactID }
+        for meetingIndex in meetings.indices {
+            let speakerIDs = Set(meetings[meetingIndex].participants.filter { $0.contactID == contactID }.map(\.speakerID))
+            for participantIndex in meetings[meetingIndex].participants.indices where
+                meetings[meetingIndex].participants[participantIndex].contactID == contactID {
+                meetings[meetingIndex].participants[participantIndex].contactID = nil
+            }
+            for segmentIndex in meetings[meetingIndex].segments.indices where
+                meetings[meetingIndex].segments[segmentIndex].speakerID.map(speakerIDs.contains) == true {
+                meetings[meetingIndex].segments[segmentIndex].speakerName = nil
+            }
+        }
+        sortAndPersistContacts()
+        persistMeetings()
+    }
+
+    func nameParticipant(meetingID: UUID, speakerID: String, name: String) {
+        guard let contactID = createContact(named: name),
+              let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }),
+              let participantIndex = meetings[meetingIndex].participants.firstIndex(where: { $0.speakerID == speakerID }),
+              let contact = contacts.first(where: { $0.id == contactID }) else { return }
+        meetings[meetingIndex].participants[participantIndex].contactID = contactID
+        for segmentIndex in meetings[meetingIndex].segments.indices where
+            meetings[meetingIndex].segments[segmentIndex].speakerID == speakerID {
+            meetings[meetingIndex].segments[segmentIndex].speakerName = contact.name
+        }
+        persistMeetings()
+    }
+
+    func assignParticipant(meetingID: UUID, speakerID: String, contactID: UUID?) {
+        guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }),
+              let participantIndex = meetings[meetingIndex].participants.firstIndex(where: { $0.speakerID == speakerID }) else { return }
+        meetings[meetingIndex].participants[participantIndex].contactID = contactID
+        let name = contactID.flatMap { id in contacts.first(where: { $0.id == id })?.name }
+        for segmentIndex in meetings[meetingIndex].segments.indices where
+            meetings[meetingIndex].segments[segmentIndex].speakerID == speakerID {
+            meetings[meetingIndex].segments[segmentIndex].speakerName = name
+        }
+        persistMeetings()
+    }
+
+    func participantName(meeting: Meeting, speakerID: String) -> String {
+        guard let participant = meeting.participants.first(where: { $0.speakerID == speakerID }),
+              let contactID = participant.contactID,
+              let contact = contacts.first(where: { $0.id == contactID }) else {
+            if speakerID == "LOCAL_USER" { return "Você" }
+            return speakerID.replacingOccurrences(of: "SPEAKER_", with: "Pessoa ")
+        }
+        return contact.name
     }
 
     func startRecording() async {
@@ -405,6 +508,14 @@ final class AppState: ObservableObject {
         enqueue(meetingID: meetingID, kind: .translationOnly)
     }
 
+    func retrySpeakerIdentification(meetingID: UUID) {
+        guard whisperXIsConfigured else {
+            errorMessage = "Configure o WhisperX e o token do Hugging Face nos Ajustes antes de tentar novamente."
+            return
+        }
+        enqueue(meetingID: meetingID, kind: .diarizationOnly)
+    }
+
     func delete(_ meeting: Meeting) {
         processingQueue.removeAll { $0.meetingID == meeting.id }
         processingProgress.removeValue(forKey: meeting.id)
@@ -577,6 +688,16 @@ final class AppState: ObservableObject {
         UserDefaults.standard.set(provider.rawValue, forKey: "summaryProvider")
     }
 
+    func saveHuggingFaceToken() {
+        let clean = huggingFaceToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        huggingFaceToken = clean
+        do {
+            try KeychainStore.set(clean, for: "hugging-face-token")
+        } catch {
+            errorMessage = "Não foi possível proteger o token no Keychain: \(error.localizedDescription)"
+        }
+    }
+
     private func refreshModelStatus() {
         if whisper.executableURL == nil {
             modelStatus = .unavailable("whisper.cpp não instalado")
@@ -699,6 +820,16 @@ final class AppState: ObservableObject {
                     provider: request.summaryProvider ?? .local
                 )
                 try await performTranslation(meetingID: request.meetingID)
+            case .diarizationOnly:
+                let files = recoveryAudio.files(for: request.meetingID)
+                guard let meeting = meetings.first(where: { $0.id == request.meetingID }),
+                      !meeting.segments.isEmpty else { throw WhisperError.noSpeechRecognized }
+                try await performDiarization(
+                    meetingID: request.meetingID,
+                    files: files,
+                    segments: meeting.segments
+                )
+                try recoveryAudio.remove(meetingID: request.meetingID)
             case .summaryAndTranslation:
                 try await performSummary(
                     meetingID: request.meetingID,
@@ -722,6 +853,11 @@ final class AppState: ObservableObject {
             if case .transcribing = processingProgress[request.meetingID]?.stage {
                 markTranscriptionFailure(meetingID: request.meetingID, error: error)
             } else {
+                if case .diarizing = processingProgress[request.meetingID]?.stage,
+                   let index = meetings.firstIndex(where: { $0.id == request.meetingID }) {
+                    meetings[index].diarizationError = error.localizedDescription
+                    persistMeetings()
+                }
                 let prefix: String
                 if case .translating = processingProgress[request.meetingID]?.stage,
                    meetings.first(where: { $0.id == request.meetingID })?.analysis != nil {
@@ -738,6 +874,7 @@ final class AppState: ObservableObject {
         }
 
         transcriptionMeetingID = nil
+        diarizationMeetingID = nil
         analysisMeetingID = nil
         translationMeetingID = nil
     }
@@ -773,10 +910,88 @@ final class AppState: ObservableObject {
         transcriptionMeetingID = nil
 
         do {
-            try recoveryAudio.remove(meetingID: meetingID)
+            try await performDiarization(meetingID: meetingID, files: files, segments: segments)
         } catch {
-            errorMessage = "A transcrição foi salva, mas o áudio temporário não pôde ser removido: \(error.localizedDescription)"
+            guard let failedIndex = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
+            meetings[failedIndex].diarizationError = error.localizedDescription
+            meetings[failedIndex].segments = segments.map { segment in
+                var updated = segment
+                if segment.source == .microphone { updated.speakerID = "LOCAL_USER" }
+                return updated
+            }
+            meetings[failedIndex].participants = meetings[failedIndex].segments
+                .compactMap(\.speakerID)
+                .reduce(into: [MeetingParticipant]()) { result, id in
+                    if !result.contains(where: { $0.speakerID == id }) {
+                        result.append(MeetingParticipant(speakerID: id))
+                    }
+                }
+            setDiarizationProgress(meetingID: meetingID, fraction: 1)
+            diarizationMeetingID = nil
+            persistMeetings()
         }
+
+        if meetings.first(where: { $0.id == meetingID })?.diarizationError == nil {
+            do {
+                try recoveryAudio.remove(meetingID: meetingID)
+            } catch {
+                errorMessage = "A transcrição foi salva, mas o áudio temporário não pôde ser removido: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func performDiarization(
+        meetingID: UUID,
+        files: [AudioSource: URL],
+        segments: [TranscriptSegment]
+    ) async throws {
+        guard let meetingAudio = files[.meeting] else {
+            guard let index = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
+            meetings[index].segments = segments.map { segment in
+                var updated = segment
+                if segment.source == .microphone { updated.speakerID = "LOCAL_USER" }
+                return updated
+            }
+            meetings[index].participants = meetings[index].segments
+                .compactMap(\.speakerID)
+                .reduce(into: [MeetingParticipant]()) { result, id in
+                    if !result.contains(where: { $0.speakerID == id }) {
+                        result.append(MeetingParticipant(speakerID: id))
+                    }
+                }
+            meetings[index].diarizationError = nil
+            persistMeetings()
+            setDiarizationProgress(meetingID: meetingID, fraction: 1)
+            return
+        }
+        diarizationMeetingID = meetingID
+        updateStage(meetingID: meetingID, stage: .diarizing)
+        let attributed = try await whisperX.diarize(
+            file: meetingAudio,
+            segments: segments,
+            huggingFaceToken: huggingFaceToken.isEmpty ? nil : huggingFaceToken
+        )
+        guard let index = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
+        let previous = Dictionary(uniqueKeysWithValues: meetings[index].participants.map { ($0.speakerID, $0.contactID) })
+        let speakerIDs = attributed.compactMap(\.speakerID).reduce(into: [String]()) { result, id in
+            if !result.contains(id) { result.append(id) }
+        }
+        meetings[index].participants = speakerIDs.map {
+            MeetingParticipant(speakerID: $0, contactID: previous[$0] ?? nil)
+        }
+        meetings[index].segments = attributed.map { segment in
+            var updated = segment
+            if let speakerID = segment.speakerID,
+               let contactID = previous[speakerID] ?? nil,
+               let contact = contacts.first(where: { $0.id == contactID }) {
+                updated.speakerName = contact.name
+            }
+            return updated
+        }
+        meetings[index].diarizationError = nil
+        persistMeetings()
+        setDiarizationProgress(meetingID: meetingID, fraction: 1)
+        diarizationMeetingID = nil
     }
 
     private func performSummary(meetingID: UUID, provider: SummaryProvider) async throws {
@@ -851,6 +1066,14 @@ final class AppState: ObservableObject {
         processingProgress[meetingID] = progress
     }
 
+    private func setDiarizationProgress(meetingID: UUID, fraction: Double) {
+        var progress = processingProgress[meetingID]
+            ?? progressSnapshot(meetingID: meetingID, stage: .diarizing)
+        progress.stage = .diarizing
+        progress.diarization = clamped(fraction)
+        processingProgress[meetingID] = progress
+    }
+
     private func setTranslationProgress(meetingID: UUID, fraction: Double) {
         var progress = processingProgress[meetingID]
             ?? progressSnapshot(meetingID: meetingID, stage: .translating)
@@ -870,7 +1093,7 @@ final class AppState: ObservableObject {
         stage: MeetingProcessingStage
     ) -> MeetingProcessingProgress {
         guard let meeting = meetings.first(where: { $0.id == meetingID }) else {
-            return MeetingProcessingProgress(stage: stage, transcription: 0, summary: 0, translation: 0)
+            return MeetingProcessingProgress(stage: stage, transcription: 0, diarization: 0, summary: 0, translation: 0)
         }
         var snapshot = MeetingProcessingProgress.queued(position: 1, meeting: meeting)
         snapshot.stage = stage
@@ -927,6 +1150,15 @@ final class AppState: ObservableObject {
             try store.save(meetings)
         } catch {
             errorMessage = "Não foi possível salvar a reunião: \(error.localizedDescription)"
+        }
+    }
+
+    private func sortAndPersistContacts() {
+        contacts.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        do {
+            try contactStore.save(contacts)
+        } catch {
+            errorMessage = "Não foi possível salvar os contatos: \(error.localizedDescription)"
         }
     }
 

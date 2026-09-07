@@ -66,16 +66,32 @@ private struct SettingsView: View {
                 value: state.claudeIsAvailable ? "Instalação local encontrada" : "Não encontrado"
             )
             LabeledContent(
+                "WhisperX · participantes",
+                value: state.whisperXIsConfigured
+                    ? "Pronto neste Mac"
+                    : state.whisperXIsAvailable ? "Token necessário" : "Instale com uv tool install whisperx"
+            )
+            SecureField("Token de leitura do Hugging Face", text: $state.huggingFaceToken)
+                .onSubmit { state.saveHuggingFaceToken() }
+            HStack {
+                Link(
+                    "Aceitar termos do modelo",
+                    destination: URL(string: "https://huggingface.co/pyannote/speaker-diarization-community-1")!
+                )
+                Spacer()
+                Button("Salvar token no Keychain") { state.saveHuggingFaceToken() }
+            }
+            LabeledContent(
                 "Privacidade",
                 value: state.selectedSummaryProvider == .local
                     ? "Resumo processado somente neste Mac"
                     : "A transcrição é enviada à Anthropic"
             )
-            LabeledContent("Áudio", value: "Nunca armazenado")
+            LabeledContent("Áudio", value: "Temporário até concluir o processamento")
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 500, height: 380)
+        .frame(width: 560, height: 500)
     }
 
     private func accessLabel(_ status: AppState.AccessStatus) -> String {

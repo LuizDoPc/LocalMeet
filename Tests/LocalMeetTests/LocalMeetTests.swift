@@ -11,6 +11,80 @@ private actor LiveChunkCollector {
     func chunks() -> [LiveAudioChunk] { values }
 }
 
+@Test func contactsAndSpeakerAssignmentsRoundTrip() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("localmeet-contacts-test-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let contact = Contact(name: "Ana")
+    let contactStore = ContactStore(baseDirectory: directory)
+    try contactStore.save([contact])
+    #expect(contactStore.load().first?.id == contact.id)
+    #expect(contactStore.load().first?.name == "Ana")
+
+    let meeting = Meeting(
+        title: "Entrevista",
+        startedAt: Date(),
+        duration: 30,
+        localeIdentifier: "pt",
+        segments: [
+            TranscriptSegment(
+                source: .meeting,
+                offset: 1,
+                text: "Bom dia",
+                speakerID: "SPEAKER_00",
+                speakerName: "Ana"
+            )
+        ],
+        participants: [MeetingParticipant(speakerID: "SPEAKER_00", contactID: contact.id)]
+    )
+    let meetingStore = MeetingStore(baseDirectory: directory)
+    try meetingStore.save([meeting])
+    let loaded = try #require(meetingStore.load().first)
+    #expect(loaded.participants.first?.contactID == contact.id)
+    #expect(loaded.segments.first?.speakerLabel == "Ana")
+    #expect(loaded.markdown.contains("[00:01] Ana"))
+}
+
+@Test func whisperXAssignsLocalSpeakerLabelsWithoutLeakingTokenInArguments() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("localmeet-whisperx-test-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let executable = directory.appendingPathComponent("whisperx")
+    let script = """
+        #!/bin/sh
+        output_dir=""
+        for argument in "$@"; do
+          if [ "$previous" = "--output_dir" ]; then output_dir="$argument"; fi
+          previous="$argument"
+        done
+        mkdir -p "$output_dir"
+        printf '%s' '{"segments":[{"start":0,"end":3,"speaker":"SPEAKER_00"},{"start":3,"end":9,"speaker":"SPEAKER_01"}]}' > "$output_dir/result.json"
+        """
+    try script.write(to: executable, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+    let audio = directory.appendingPathComponent("audio.wav")
+    try Data().write(to: audio)
+
+    let result = try await WhisperXEngine(
+        executableURL: executable,
+        workingDirectory: directory.appendingPathComponent("runs")
+    ).diarize(
+        file: audio,
+        segments: [
+            TranscriptSegment(source: .meeting, offset: 0, text: "Primeira voz"),
+            TranscriptSegment(source: .meeting, offset: 4, text: "Segunda voz"),
+            TranscriptSegment(source: .microphone, offset: 5, text: "Minha voz")
+        ],
+        huggingFaceToken: "hf_secret"
+    )
+
+    #expect(result[0].speakerID == "SPEAKER_00")
+    #expect(result[1].speakerID == "SPEAKER_01")
+    #expect(result[2].speakerID == "LOCAL_USER")
+}
+
 @Test func meetingRoundTripAndMarkdownExport() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)

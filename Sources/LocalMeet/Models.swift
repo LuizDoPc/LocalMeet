@@ -40,6 +40,8 @@ struct TranscriptSegment: Identifiable, Codable, Hashable, Sendable {
     var text: String
     var detectedLanguage: String
     var translations: [String: String]
+    var speakerID: String?
+    var speakerName: String?
 
     init(
         id: UUID = UUID(),
@@ -47,7 +49,9 @@ struct TranscriptSegment: Identifiable, Codable, Hashable, Sendable {
         offset: TimeInterval,
         text: String,
         detectedLanguage: String = "und",
-        translations: [String: String] = [:]
+        translations: [String: String] = [:],
+        speakerID: String? = nil,
+        speakerName: String? = nil
     ) {
         self.id = id
         self.source = source
@@ -55,6 +59,8 @@ struct TranscriptSegment: Identifiable, Codable, Hashable, Sendable {
         self.text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         self.detectedLanguage = detectedLanguage
         self.translations = translations
+        self.speakerID = speakerID
+        self.speakerName = speakerName
     }
 
     var timestamp: String {
@@ -71,8 +77,15 @@ struct TranscriptSegment: Identifiable, Codable, Hashable, Sendable {
         }
     }
 
+    var speakerLabel: String {
+        if let speakerName, !speakerName.isEmpty { return speakerName }
+        if source == .microphone { return "Você" }
+        guard let speakerID else { return source.label }
+        return speakerID.replacingOccurrences(of: "SPEAKER_", with: "Pessoa ")
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case id, source, offset, text, detectedLanguage, translations
+        case id, source, offset, text, detectedLanguage, translations, speakerID, speakerName
     }
 
     init(from decoder: Decoder) throws {
@@ -83,6 +96,32 @@ struct TranscriptSegment: Identifiable, Codable, Hashable, Sendable {
         text = try values.decode(String.self, forKey: .text)
         detectedLanguage = try values.decodeIfPresent(String.self, forKey: .detectedLanguage) ?? "und"
         translations = try values.decodeIfPresent([String: String].self, forKey: .translations) ?? [:]
+        speakerID = try values.decodeIfPresent(String.self, forKey: .speakerID)
+        speakerName = try values.decodeIfPresent(String.self, forKey: .speakerName)
+    }
+}
+
+struct Contact: Identifiable, Codable, Hashable, Sendable {
+    let id: UUID
+    var name: String
+    let createdAt: Date
+
+    init(id: UUID = UUID(), name: String, createdAt: Date = Date()) {
+        self.id = id
+        self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.createdAt = createdAt
+    }
+}
+
+struct MeetingParticipant: Identifiable, Codable, Hashable, Sendable {
+    let id: UUID
+    let speakerID: String
+    var contactID: UUID?
+
+    init(id: UUID = UUID(), speakerID: String, contactID: UUID? = nil) {
+        self.id = id
+        self.speakerID = speakerID
+        self.contactID = contactID
     }
 }
 
@@ -163,6 +202,8 @@ struct Meeting: Identifiable, Codable, Hashable, Sendable {
     var captureDiagnostics: CaptureDiagnostics?
     var transcriptionError: String?
     var transcriptionAttemptCount: Int
+    var participants: [MeetingParticipant]
+    var diarizationError: String?
 
     init(
         id: UUID = UUID(),
@@ -175,7 +216,9 @@ struct Meeting: Identifiable, Codable, Hashable, Sendable {
         tags: [String] = [],
         captureDiagnostics: CaptureDiagnostics? = nil,
         transcriptionError: String? = nil,
-        transcriptionAttemptCount: Int = 0
+        transcriptionAttemptCount: Int = 0,
+        participants: [MeetingParticipant] = [],
+        diarizationError: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -188,6 +231,8 @@ struct Meeting: Identifiable, Codable, Hashable, Sendable {
         self.captureDiagnostics = captureDiagnostics
         self.transcriptionError = transcriptionError
         self.transcriptionAttemptCount = transcriptionAttemptCount
+        self.participants = participants
+        self.diarizationError = diarizationError
     }
 
     var durationLabel: String {
@@ -223,7 +268,7 @@ struct Meeting: Identifiable, Codable, Hashable, Sendable {
             ""
         ]
         lines += segments.map { segment in
-            var line = "**[\(segment.timestamp)] \(segment.source.label) · \(segment.languageLabel):** \(segment.text)"
+            var line = "**[\(segment.timestamp)] \(segment.speakerLabel) · \(segment.languageLabel):** \(segment.text)"
             if let translated = segment.translations["pt"], translated != segment.text {
                 line += "\n\n> Tradução: \(translated)"
             }
@@ -250,7 +295,7 @@ struct Meeting: Identifiable, Codable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, startedAt, duration, localeIdentifier, segments, analysis, tags, captureDiagnostics
-        case transcriptionError, transcriptionAttemptCount
+        case transcriptionError, transcriptionAttemptCount, participants, diarizationError
     }
 
     init(from decoder: Decoder) throws {
@@ -266,6 +311,8 @@ struct Meeting: Identifiable, Codable, Hashable, Sendable {
         captureDiagnostics = try values.decodeIfPresent(CaptureDiagnostics.self, forKey: .captureDiagnostics)
         transcriptionError = try values.decodeIfPresent(String.self, forKey: .transcriptionError)
         transcriptionAttemptCount = try values.decodeIfPresent(Int.self, forKey: .transcriptionAttemptCount) ?? 0
+        participants = try values.decodeIfPresent([MeetingParticipant].self, forKey: .participants) ?? []
+        diarizationError = try values.decodeIfPresent(String.self, forKey: .diarizationError)
     }
 }
 

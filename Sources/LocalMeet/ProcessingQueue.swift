@@ -2,6 +2,7 @@ import Foundation
 
 enum ProcessingRequestKind: String, Codable, Sendable {
     case fullPipeline
+    case diarizationOnly
     case summaryAndTranslation
     case summaryOnly
     case translationOnly
@@ -26,6 +27,7 @@ struct ProcessingRequest: Codable, Equatable, Sendable {
 enum MeetingProcessingStage: Equatable, Sendable {
     case queued(position: Int)
     case transcribing
+    case diarizing
     case summarizing
     case translating
     case completed
@@ -35,6 +37,7 @@ enum MeetingProcessingStage: Equatable, Sendable {
         switch self {
         case .queued(let position): "Na fila · posição \(position)"
         case .transcribing: "Transcrevendo áudio"
+        case .diarizing: "Identificando participantes com WhisperX"
         case .summarizing: "Gerando resumo e ações"
         case .translating: "Traduzindo PT · EN · DE"
         case .completed: "Processamento concluído"
@@ -46,6 +49,7 @@ enum MeetingProcessingStage: Equatable, Sendable {
 struct MeetingProcessingProgress: Equatable, Sendable {
     var stage: MeetingProcessingStage
     var transcription: Double
+    var diarization: Double = 0
     var summary: Double
     var translation: Double
 
@@ -53,10 +57,11 @@ struct MeetingProcessingProgress: Equatable, Sendable {
         switch stage {
         case .queued: 0
         case .transcribing: transcription
+        case .diarizing: diarization
         case .summarizing: summary
         case .translating: translation
         case .completed: 1
-        case .failed: (transcription + summary + translation) / 3
+        case .failed: (transcription + diarization + summary + translation) / 4
         }
     }
 
@@ -69,6 +74,7 @@ struct MeetingProcessingProgress: Equatable, Sendable {
         MeetingProcessingProgress(
             stage: .queued(position: position),
             transcription: meeting.segments.isEmpty ? 0 : 1,
+            diarization: meeting.participants.isEmpty ? 0 : 1,
             summary: meeting.analysis == nil ? 0 : 1,
             translation: !meeting.segments.isEmpty && meeting.segments.allSatisfy { segment in
                 ["pt", "en", "de"].allSatisfy { segment.translations[$0]?.isEmpty == false }

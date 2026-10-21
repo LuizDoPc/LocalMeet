@@ -10,6 +10,7 @@ LOCALMEET — INSTALAÇÃO
 8. Para cada resumo, escolha LLM local ou Claude. O modo Claude usa o Claude Code já instalado e autenticado neste Mac e envia a transcrição à Anthropic.
 9. Para identificar participantes individuais, instale ffmpeg e WhisperX, aceite os termos do modelo pyannote community-1 e salve um token de leitura do Hugging Face em Ajustes. O token fica protegido no Keychain e a identificação roda localmente.
 10. Depois da identificação, nomeie as vozes na reunião ou use a aba Contatos. O nome passa a aparecer em todas as falas vinculadas.
+11. Ao confirmar uma voz, o LocalMeet cria um perfil numérico local. Em reuniões futuras, ele reconhece automaticamente contatos com similaridade alta; confirme o selo verde para reforçar o perfil.
 
 REQUISITOS
 
@@ -20,4 +21,4 @@ REQUISITOS
 
 PRIVACIDADE
 
-O áudio é apagado depois que a transcrição e a identificação de participantes terminam. Se uma etapa falhar, as duas trilhas ficam preservadas localmente para uma nova tentativa. O texto e os contatos ficam em ~/Library/Application Support/LocalMeet.
+O áudio é apagado depois que a transcrição e a identificação de participantes terminam. Se uma etapa falhar, as duas trilhas ficam preservadas localmente para uma nova tentativa. O texto, os contatos e os perfis numéricos de voz ficam em ~/Library/Application Support/LocalMeet.

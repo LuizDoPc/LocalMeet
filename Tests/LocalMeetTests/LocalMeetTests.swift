@@ -16,7 +16,7 @@ private actor LiveChunkCollector {
         .appendingPathComponent("localmeet-contacts-test-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
 
-    let contact = Contact(name: "Ana")
+    let contact = Contact(name: "Ana", voiceEmbedding: [1, 0, 0], voiceSampleCount: 1)
     let contactStore = ContactStore(baseDirectory: directory)
     try contactStore.save([contact])
     #expect(contactStore.load().first?.id == contact.id)
@@ -36,14 +36,44 @@ private actor LiveChunkCollector {
                 speakerName: "Ana"
             )
         ],
-        participants: [MeetingParticipant(speakerID: "SPEAKER_00", contactID: contact.id)]
+        participants: [
+            MeetingParticipant(
+                speakerID: "SPEAKER_00",
+                contactID: contact.id,
+                voiceEmbedding: [1, 0, 0],
+                identificationConfidence: 0.91,
+                wasAutoMatched: true
+            )
+        ]
     )
     let meetingStore = MeetingStore(baseDirectory: directory)
     try meetingStore.save([meeting])
     let loaded = try #require(meetingStore.load().first)
     #expect(loaded.participants.first?.contactID == contact.id)
+    #expect(loaded.participants.first?.wasAutoMatched == true)
+    #expect(contactStore.load().first?.voiceSampleCount == 1)
     #expect(loaded.segments.first?.speakerLabel == "Ana")
     #expect(loaded.markdown.contains("[00:01] Ana"))
+}
+
+@Test func legacyContactsAndParticipantsDecodeWithoutVoiceProfiles() throws {
+    let contactID = UUID()
+    let participantID = UUID()
+    let contactData = Data(
+        "{\"id\":\"\(contactID.uuidString)\",\"name\":\"Ana\",\"createdAt\":0}".utf8
+    )
+    let participantData = Data(
+        "{\"id\":\"\(participantID.uuidString)\",\"speakerID\":\"SPEAKER_00\",\"contactID\":null}".utf8
+    )
+
+    let contact = try JSONDecoder().decode(Contact.self, from: contactData)
+    let participant = try JSONDecoder().decode(MeetingParticipant.self, from: participantData)
+
+    #expect(contact.voiceEmbedding == nil)
+    #expect(contact.voiceSampleCount == 0)
+    #expect(participant.voiceEmbedding == nil)
+    #expect(participant.identificationConfidence == nil)
+    #expect(participant.wasAutoMatched == false)
 }
 
 @Test func whisperXAssignsLocalSpeakerLabelsWithoutLeakingTokenInArguments() async throws {
@@ -60,7 +90,7 @@ private actor LiveChunkCollector {
           previous="$argument"
         done
         mkdir -p "$output_dir"
-        printf '%s' '{"segments":[{"start":0,"end":3,"speaker":"SPEAKER_00"},{"start":3,"end":9,"speaker":"SPEAKER_01"}]}' > "$output_dir/result.json"
+        printf '%s' '{"segments":[{"start":0,"end":3,"speaker":"SPEAKER_00"},{"start":3,"end":9,"speaker":"SPEAKER_01"}],"speaker_embeddings":{"SPEAKER_00":[1,0,0],"SPEAKER_01":[0,1,0]}}' > "$output_dir/result.json"
         """
     try script.write(to: executable, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
@@ -80,9 +110,42 @@ private actor LiveChunkCollector {
         huggingFaceToken: "hf_secret"
     )
 
-    #expect(result[0].speakerID == "SPEAKER_00")
-    #expect(result[1].speakerID == "SPEAKER_01")
-    #expect(result[2].speakerID == "LOCAL_USER")
+    #expect(result.segments[0].speakerID == "SPEAKER_00")
+    #expect(result.segments[1].speakerID == "SPEAKER_01")
+    #expect(result.segments[2].speakerID == "LOCAL_USER")
+    #expect(result.speakerEmbeddings["SPEAKER_00"] == [1, 0, 0])
+}
+
+@Test func speakerProfilesMatchAcrossMeetingsConservatively() throws {
+    let ana = Contact(name: "Ana", voiceEmbedding: [1, 0, 0], voiceSampleCount: 2)
+    let bruno = Contact(name: "Bruno", voiceEmbedding: [0, 1, 0], voiceSampleCount: 1)
+    let matches = SpeakerProfileMatcher.matches(
+        speakerEmbeddings: [
+            "SPEAKER_00": [0.99, 0.04, 0],
+            "SPEAKER_01": [0.02, 0.98, 0]
+        ],
+        contacts: [ana, bruno]
+    )
+
+    #expect(matches["SPEAKER_00"]?.contactID == ana.id)
+    #expect(matches["SPEAKER_01"]?.contactID == bruno.id)
+    #expect(matches["SPEAKER_00"]?.similarity ?? 0 > 0.99)
+
+    let ambiguous = SpeakerProfileMatcher.matches(
+        speakerEmbeddings: ["SPEAKER_02": [0.71, 0.70, 0]],
+        contacts: [ana, bruno]
+    )
+    #expect(ambiguous.isEmpty)
+
+    let merged = try #require(
+        SpeakerProfileMatcher.mergedProfile(
+            existing: [1, 0, 0],
+            sampleCount: 1,
+            sample: [0.98, 0.2, 0]
+        )
+    )
+    #expect(merged.sampleCount == 2)
+    #expect(abs(SpeakerProfileMatcher.cosine(merged.embedding, merged.embedding) - 1) < 0.000_001)
 }
 
 @Test func meetingRoundTripAndMarkdownExport() throws {

@@ -105,11 +105,34 @@ struct Contact: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var name: String
     let createdAt: Date
+    var voiceEmbedding: [Double]?
+    var voiceSampleCount: Int
 
-    init(id: UUID = UUID(), name: String, createdAt: Date = Date()) {
+    init(
+        id: UUID = UUID(),
+        name: String,
+        createdAt: Date = Date(),
+        voiceEmbedding: [Double]? = nil,
+        voiceSampleCount: Int = 0
+    ) {
         self.id = id
         self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         self.createdAt = createdAt
+        self.voiceEmbedding = voiceEmbedding
+        self.voiceSampleCount = voiceSampleCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, createdAt, voiceEmbedding, voiceSampleCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        voiceEmbedding = try values.decodeIfPresent([Double].self, forKey: .voiceEmbedding)
+        voiceSampleCount = try values.decodeIfPresent(Int.self, forKey: .voiceSampleCount) ?? 0
     }
 }
 
@@ -117,11 +140,38 @@ struct MeetingParticipant: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     let speakerID: String
     var contactID: UUID?
+    var voiceEmbedding: [Double]?
+    var identificationConfidence: Double?
+    var wasAutoMatched: Bool
 
-    init(id: UUID = UUID(), speakerID: String, contactID: UUID? = nil) {
+    init(
+        id: UUID = UUID(),
+        speakerID: String,
+        contactID: UUID? = nil,
+        voiceEmbedding: [Double]? = nil,
+        identificationConfidence: Double? = nil,
+        wasAutoMatched: Bool = false
+    ) {
         self.id = id
         self.speakerID = speakerID
         self.contactID = contactID
+        self.voiceEmbedding = voiceEmbedding
+        self.identificationConfidence = identificationConfidence
+        self.wasAutoMatched = wasAutoMatched
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, speakerID, contactID, voiceEmbedding, identificationConfidence, wasAutoMatched
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        speakerID = try values.decode(String.self, forKey: .speakerID)
+        contactID = try values.decodeIfPresent(UUID.self, forKey: .contactID)
+        voiceEmbedding = try values.decodeIfPresent([Double].self, forKey: .voiceEmbedding)
+        identificationConfidence = try values.decodeIfPresent(Double.self, forKey: .identificationConfidence)
+        wasAutoMatched = try values.decodeIfPresent(Bool.self, forKey: .wasAutoMatched) ?? false
     }
 }
 

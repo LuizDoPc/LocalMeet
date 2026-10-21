@@ -256,22 +256,32 @@ final class AppState: ObservableObject {
               let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }),
               let participantIndex = meetings[meetingIndex].participants.firstIndex(where: { $0.speakerID == speakerID }),
               let contact = contacts.first(where: { $0.id == contactID }) else { return }
+        let voiceEmbedding = meetings[meetingIndex].participants[participantIndex].voiceEmbedding
         meetings[meetingIndex].participants[participantIndex].contactID = contactID
+        meetings[meetingIndex].participants[participantIndex].identificationConfidence = nil
+        meetings[meetingIndex].participants[participantIndex].wasAutoMatched = false
         for segmentIndex in meetings[meetingIndex].segments.indices where
             meetings[meetingIndex].segments[segmentIndex].speakerID == speakerID {
             meetings[meetingIndex].segments[segmentIndex].speakerName = contact.name
         }
+        enrollVoice(contactID: contactID, embedding: voiceEmbedding)
         persistMeetings()
     }
 
     func assignParticipant(meetingID: UUID, speakerID: String, contactID: UUID?) {
         guard let meetingIndex = meetings.firstIndex(where: { $0.id == meetingID }),
               let participantIndex = meetings[meetingIndex].participants.firstIndex(where: { $0.speakerID == speakerID }) else { return }
+        let voiceEmbedding = meetings[meetingIndex].participants[participantIndex].voiceEmbedding
         meetings[meetingIndex].participants[participantIndex].contactID = contactID
+        meetings[meetingIndex].participants[participantIndex].identificationConfidence = nil
+        meetings[meetingIndex].participants[participantIndex].wasAutoMatched = false
         let name = contactID.flatMap { id in contacts.first(where: { $0.id == id })?.name }
         for segmentIndex in meetings[meetingIndex].segments.indices where
             meetings[meetingIndex].segments[segmentIndex].speakerID == speakerID {
             meetings[meetingIndex].segments[segmentIndex].speakerName = name
+        }
+        if let contactID {
+            enrollVoice(contactID: contactID, embedding: voiceEmbedding)
         }
         persistMeetings()
     }
@@ -966,23 +976,47 @@ final class AppState: ObservableObject {
         }
         diarizationMeetingID = meetingID
         updateStage(meetingID: meetingID, stage: .diarizing)
-        let attributed = try await whisperX.diarize(
+        let diarization = try await whisperX.diarize(
             file: meetingAudio,
             segments: segments,
             huggingFaceToken: huggingFaceToken.isEmpty ? nil : huggingFaceToken
         )
         guard let index = meetings.firstIndex(where: { $0.id == meetingID }) else { return }
-        let previous = Dictionary(uniqueKeysWithValues: meetings[index].participants.map { ($0.speakerID, $0.contactID) })
-        let speakerIDs = attributed.compactMap(\.speakerID).reduce(into: [String]()) { result, id in
+        let previous = Dictionary(uniqueKeysWithValues: meetings[index].participants.map { ($0.speakerID, $0) })
+        let automaticMatches = SpeakerProfileMatcher.matches(
+            speakerEmbeddings: diarization.speakerEmbeddings,
+            contacts: contacts
+        )
+        let speakerIDs = diarization.segments.compactMap(\.speakerID).reduce(into: [String]()) { result, id in
             if !result.contains(id) { result.append(id) }
         }
-        meetings[index].participants = speakerIDs.map {
-            MeetingParticipant(speakerID: $0, contactID: previous[$0] ?? nil)
+        meetings[index].participants = speakerIDs.map { speakerID in
+            if let existing = previous[speakerID], existing.contactID != nil {
+                return MeetingParticipant(
+                    id: existing.id,
+                    speakerID: speakerID,
+                    contactID: existing.contactID,
+                    voiceEmbedding: diarization.speakerEmbeddings[speakerID] ?? existing.voiceEmbedding,
+                    identificationConfidence: existing.identificationConfidence,
+                    wasAutoMatched: existing.wasAutoMatched
+                )
+            }
+            let match = automaticMatches[speakerID]
+            return MeetingParticipant(
+                speakerID: speakerID,
+                contactID: match?.contactID,
+                voiceEmbedding: diarization.speakerEmbeddings[speakerID],
+                identificationConfidence: match?.similarity,
+                wasAutoMatched: match != nil
+            )
         }
-        meetings[index].segments = attributed.map { segment in
+        let contactBySpeaker = Dictionary(uniqueKeysWithValues: meetings[index].participants.compactMap { participant in
+            participant.contactID.map { (participant.speakerID, $0) }
+        })
+        meetings[index].segments = diarization.segments.map { segment in
             var updated = segment
             if let speakerID = segment.speakerID,
-               let contactID = previous[speakerID] ?? nil,
+               let contactID = contactBySpeaker[speakerID],
                let contact = contacts.first(where: { $0.id == contactID }) {
                 updated.speakerName = contact.name
             }
@@ -1160,6 +1194,19 @@ final class AppState: ObservableObject {
         } catch {
             errorMessage = "Não foi possível salvar os contatos: \(error.localizedDescription)"
         }
+    }
+
+    private func enrollVoice(contactID: UUID, embedding: [Double]?) {
+        guard let embedding,
+              let contactIndex = contacts.firstIndex(where: { $0.id == contactID }),
+              let merged = SpeakerProfileMatcher.mergedProfile(
+                existing: contacts[contactIndex].voiceEmbedding,
+                sampleCount: contacts[contactIndex].voiceSampleCount,
+                sample: embedding
+              ) else { return }
+        contacts[contactIndex].voiceEmbedding = merged.embedding
+        contacts[contactIndex].voiceSampleCount = merged.sampleCount
+        sortAndPersistContacts()
     }
 
     private func defaultTitle(for date: Date) -> String {

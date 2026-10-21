@@ -71,6 +71,10 @@ private struct SettingsView: View {
                     ? "Pronto neste Mac"
                     : state.whisperXIsAvailable ? "Token necessário" : "Instale com uv tool install whisperx"
             )
+            LabeledContent(
+                "Reconhecimento entre reuniões",
+                value: "\(state.contacts.filter { $0.voiceSampleCount > 0 }.count) vozes cadastradas"
+            )
             SecureField("Token de leitura do Hugging Face", text: $state.huggingFaceToken)
                 .onSubmit { state.saveHuggingFaceToken() }
             HStack {
@@ -91,7 +95,7 @@ private struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 560, height: 500)
+        .frame(width: 560, height: 530)
     }
 
     private func accessLabel(_ status: AppState.AccessStatus) -> String {

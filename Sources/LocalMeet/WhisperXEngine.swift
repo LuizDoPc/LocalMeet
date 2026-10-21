@@ -46,7 +46,7 @@ struct WhisperXEngine: Sendable {
         file: URL,
         segments: [TranscriptSegment],
         huggingFaceToken: String?
-    ) async throws -> [TranscriptSegment] {
+    ) async throws -> WhisperXDiarizationResult {
         guard let executableURL = executableURL ?? Self.locateExecutable() else {
             throw WhisperXError.notInstalled
         }
@@ -65,6 +65,7 @@ struct WhisperXEngine: Sendable {
                     "--device", "cpu",
                     "--compute_type", "int8",
                     "--diarize",
+                    "--speaker_embeddings",
                     "--output_format", "json",
                     "--output_dir", runDirectory.path
                 ]
@@ -85,7 +86,10 @@ struct WhisperXEngine: Sendable {
                 return SpeakerTurn(start: item.start, end: item.end, speaker: speaker)
             }
             guard !turns.isEmpty else { throw WhisperXError.noSpeakers }
-            return Self.assign(turns: turns, to: segments)
+            return WhisperXDiarizationResult(
+                segments: Self.assign(turns: turns, to: segments),
+                speakerEmbeddings: document.speakerEmbeddings ?? [:]
+            )
         }.value
     }
 
@@ -169,6 +173,11 @@ private struct SpeakerTurn {
     let speaker: String
 }
 
+struct WhisperXDiarizationResult: Sendable {
+    let segments: [TranscriptSegment]
+    let speakerEmbeddings: [String: [Double]]
+}
+
 private struct WhisperXDocument: Decodable {
     struct Segment: Decodable {
         let start: Double
@@ -176,4 +185,10 @@ private struct WhisperXDocument: Decodable {
         let speaker: String?
     }
     let segments: [Segment]
+    let speakerEmbeddings: [String: [Double]]?
+
+    private enum CodingKeys: String, CodingKey {
+        case segments
+        case speakerEmbeddings = "speaker_embeddings"
+    }
 }

@@ -334,6 +334,13 @@ private struct ContactRow: View {
                 Text(appearances == 1 ? "1 reunião" : "\(appearances) reuniões")
                     .font(.caption)
                     .foregroundStyle(Theme.muted)
+                Text(
+                    contact.voiceSampleCount > 0
+                        ? "Voz cadastrada · \(contact.voiceSampleCount) \(contact.voiceSampleCount == 1 ? "amostra" : "amostras")"
+                        : "Voz ainda não cadastrada"
+                )
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(contact.voiceSampleCount > 0 ? Theme.green : Theme.muted)
             }
             Spacer()
             Button("Salvar") { state.renameContact(contact.id, to: draftName) }
@@ -393,6 +400,26 @@ private struct ParticipantEditor: View {
                 .font(.caption.weight(.semibold))
                 .frame(minWidth: 80, maxWidth: 130)
                 .onSubmit(save)
+            if participant.wasAutoMatched,
+               let confidence = participant.identificationConfidence,
+               let contactID = participant.contactID {
+                Text(confidence, format: .percent.precision(.fractionLength(0)))
+                    .font(.caption2.monospacedDigit().weight(.bold))
+                    .foregroundStyle(Theme.green)
+                    .help("Similaridade da voz com este contato")
+                Button {
+                    state.assignParticipant(
+                        meetingID: meeting.id,
+                        speakerID: participant.speakerID,
+                        contactID: contactID
+                    )
+                } label: {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Theme.green)
+                }
+                .buttonStyle(.plain)
+                .help("Confirmar reconhecimento e reforçar o perfil de voz")
+            }
             Menu {
                 if !state.contacts.isEmpty {
                     ForEach(state.contacts) { contact in

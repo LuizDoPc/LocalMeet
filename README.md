@@ -20,6 +20,7 @@
 - Captures **system audio and microphone separately**, even when people speak over each other.
 - Identifies distinct speakers in the system-audio track with locally running **WhisperX**, and attributes every transcript segment to a participant.
 - Includes a persistent **Contacts** area; a detected voice can be named or linked to an existing contact directly from the meeting.
+- Learns a local voice profile when you confirm a participant, then recognizes that contact conservatively in future meetings without requiring the name every time.
 - Shows a scrollable near-real-time original-language transcript during recording, usually within 15–25 seconds, while keeping the final high-quality transcription pipeline independent.
 - Temporarily mutes only your microphone while system audio keeps recording; muted intervals are written as silence to preserve timeline alignment.
 - Lets you browse and edit previous meetings while recording, with persistent timer, microphone mute, and stop controls.
@@ -49,10 +50,11 @@ LocalMeet is designed to keep meeting content on your device:
 
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp) handles transcription and language detection locally.
 - [WhisperX](https://github.com/m-bain/whisperX) performs speaker diarization locally. Model files are fetched once and remain in the local Hugging Face cache.
+- Voice profiles are normalized numeric embeddings stored with contacts on this Mac. Automatic matches require high similarity and a clear margin over other contacts; raw voice audio is not retained as a contact profile.
 - Apple Foundation Models generates translations and meeting analysis on-device when available.
 - Claude is optional. When selected, LocalMeet invokes the user's existing local Claude Code installation and authentication in a tool-free, non-persistent session; the transcript is sent to Anthropic for processing.
 - Audio is removed after successful transcription and speaker identification. If either step fails, both tracks are preserved locally so you can retry without losing the meeting.
-- Transcripts are stored at `~/Library/Application Support/LocalMeet/meetings.json`.
+- Transcripts are stored at `~/Library/Application Support/LocalMeet/meetings.json`; contacts and their local voice profiles are stored in `contacts.json` beside it.
 - Failed recordings are kept under `~/Library/Application Support/LocalMeet/RecoveryAudio/` until a retry succeeds.
 - No proprietary LocalMeet server is required. Speaker diarization needs a free Hugging Face account only to accept the model terms and download its weights; inference remains local.
 
